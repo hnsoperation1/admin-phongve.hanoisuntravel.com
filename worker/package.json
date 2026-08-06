@@ -1,0 +1,13 @@
+{
+  "name": "zalo-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.108.2",
+    "zca-js": "^2.1.2"
+  }
+}
