@@ -20,7 +20,7 @@ const STATUS_LABEL: Record<string, string> = {
   idle: 'Chưa đăng nhập lần nào (hoặc đã lâu không đổi session)',
   requested: 'Đang gửi yêu cầu tới worker...',
   in_progress: 'Worker đang khởi tạo mã QR...',
-  qr_ready: 'Quét mã QR bên dưới bằng app Zalo trên điện thoại (acc phụ)',
+  qr_ready: 'Quét mã QR bên dưới bằng app Zalo trên điện thoại',
   scanned: 'Đã quét — xác nhận đăng nhập trên điện thoại...',
   done: 'Đăng nhập thành công',
   expired: 'Mã QR đã hết hạn (~100 giây)',
