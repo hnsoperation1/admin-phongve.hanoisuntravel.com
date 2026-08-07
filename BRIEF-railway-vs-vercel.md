@@ -197,43 +197,60 @@ riêng. Giờ tách hẳn: bảng mới `phong_ve_allowlist` (Supabase, xem
 
 ## Đang dở (2026-08-07): tách session Zalo theo từng nhân viên
 
-**Đã xác nhận với user, CHƯA áp dụng xong** — mới viết
-`migration_zalo_session_per_user.sql` (DROP + tạo lại 3 bảng zalo_session/
-zalo_groups/zalo_contacts với `user_id` thay vì 1 dòng chung), CHƯA sửa
-`worker/index.js` (cần giữ nhiều kết nối Zalo cùng lúc, `Map<user_id, api>`
-thay vì 1 biến `api` toàn cục), CHƯA sửa `/api/zalo-session`,
-`/api/zalo-groups`, `/api/zalo-contacts`, `/api/zalo-sync-request` (đều
-đang thao tác trên 1 dòng cố định `id=1`, cần đổi sang lọc theo
-`user.id` của người gọi). Mục tiêu: mỗi lịch gửi tin gửi bằng ĐÚNG tài
-khoản Zalo của người tạo lịch (`created_by`, cột có sẵn) thay vì 1 bot
-chung cho cả team. Việc còn lại khi quay lại làm tiếp:
-1. Rewrite `worker/index.js` (đã có plan chi tiết, nhiều hàm sync/login
-   cần nhận thêm tham số `userId`).
-2. Sửa 4 route API kể trên lọc theo user hiện tại.
-3. Chạy migration mới — **MẤT session/nhóm/danh bạ hiện có** (chỉ có 1
-   session test, chưa phải dữ liệu thật), mỗi người cần quét QR lại 1 lần.
+**Đã xong code.** `migration_zalo_session_per_user.sql` đã được chạy trên
+Supabase (DROP + tạo lại 3 bảng zalo_session/zalo_groups/zalo_contacts với
+`user_id` PK/composite key thay vì 1 dòng chung `id=1`) — lúc đó code
+chưa kịp cập nhật nên `/api/zalo-session` từng lỗi
+`column zalo_session.id does not exist` (đã fix). Đã sửa xong:
 
-## Việc còn lại (chưa làm)
+- `worker/index.js` — viết lại toàn bộ: `sessions = Map<user_id, api>` +
+  `loginInProgress = Set<user_id>` thay cho 1 biến `api` toàn cục.
+  `processDueJobs()` gửi bằng `sessions.get(job.created_by)` — job của
+  user chưa đăng nhập/session hết hạn tự chuyển `status='error'` với
+  thông báo rõ ràng thay vì kẹt "pending" mãi. `checkLoginRequests()`/
+  `checkSyncRequests()` quét TẤT CẢ dòng đang cần xử lý (không chỉ 1
+  dòng cố định), xử lý song song nhiều user cùng lúc.
+- `/api/zalo-session`, `/api/zalo-groups`, `/api/zalo-contacts`,
+  `/api/zalo-sync-request` — đều lọc/ghi theo `user.id` của người gọi
+  (`requirePhongVe()`), GET/POST zalo-session dùng `upsert` (lần đầu user
+  đó chưa có dòng nào).
+- `/api/zalo-contacts` đổi từ `requireSuperAdmin()` → `requirePhongVe()`
+  — lý do khoá riêng super_admin trước đó (1 bot chung, lộ SĐT của cả
+  team) không còn đúng nữa, giờ mỗi người chỉ thấy đúng danh bạ của tài
+  khoản Zalo họ tự đăng nhập.
+- `danh-muc-zalo/page.tsx` — bỏ chặn `is_super_admin`, đổi mô tả thành
+  "của tài khoản Zalo bạn đã đăng nhập". Sidebar VẪN ẩn link trang này
+  như yêu cầu trước đó (chỉ vào qua gõ URL) — lý do ẩn ban đầu (trang
+  admin-only) không còn đúng nữa nhưng chưa đổi lại vì bạn chưa yêu cầu,
+  cân nhắc thêm lại vào Sidebar nếu muốn mọi người dễ tìm thấy hơn.
 
-1. Chạy 7 migration trên Supabase SQL Editor:
-   `migration_zalo_scheduled_messages.sql`, `migration_zalo_session.sql`,
-   `migration_zalo_groups.sql`, `migration_zalo_contacts.sql`,
-   `migration_zalo_sync_requested.sql`, `migration_phong_ve_allowlist.sql`,
+## Việc còn lại (chưa làm) — ƯU TIÊN: worker Railway đang chạy code CŨ, cần deploy lại NGAY
+
+1. **Push code này lên Git để Railway tự deploy lại worker** — worker hiện
+   tại (code cũ, trước khi sửa xong ở trên) đang lỗi mọi query vào
+   `zalo_session` vì bảng đã đổi cấu trúc, coi như KHÔNG gửi được tin/xử
+   lý đăng nhập nào cho tới khi deploy lại.
+2. Chạy 3 migration còn thiếu trên Supabase SQL Editor (nếu chưa):
+   `migration_zalo_scheduled_messages.sql`, `migration_phong_ve_allowlist.sql`,
    `migration_zalo_scheduled_messages_recurrence_until.sql`.
-   (KHÔNG chạy `migration_zalo_session_per_user.sql` vội — code phụ thuộc
-   nó chưa xong, chạy sớm sẽ làm sập tính năng đăng nhập Zalo/lịch gửi tin
-   hiện tại.)
-2. Vào `crm.hanoisuntravel.com/admin/users`, bật "App Phòng vé" cho từng
+   - `migration_zalo_groups.sql`, `migration_zalo_contacts.sql`,
+     `migration_zalo_sync_requested.sql` giờ THỪA (không cần chạy nữa) —
+     `migration_zalo_session_per_user.sql` đã tự tạo sẵn zalo_groups/
+     zalo_contacts bản mới (có `user_id`) + cột `sync_requested` rồi.
+     Chạy lại vẫn an toàn (đều dùng `IF NOT EXISTS`) chỉ là thừa thãi.
+   - **TUYỆT ĐỐI KHÔNG chạy** `migration_zalo_session.sql` (bản 1-dòng-
+     chung cũ) — sẽ báo lỗi vì dòng `INSERT ... VALUES (1)` của nó dùng
+     cột `id`, cột này không còn tồn tại trong bảng zalo_session mới (giờ
+     dùng `user_id`).
+3. Vào `crm.hanoisuntravel.com/admin/users`, bật "App Phòng vé" cho từng
    tài khoản cần dùng admin-phongve (super_admin không cần, luôn vào
    được) — quan trọng: làm TRƯỚC khi deploy code này, nếu không ai đang
    dùng qua quyền boss/kế toán cũ sẽ bị khoá ngoài ngay khi deploy.
-3. Deploy `worker/` lên Railway (Root Directory = `worker`), set 2 env
-   Supabase — xem `worker/README.md`.
 4. Deploy app Next.js chính lên Vercel (chưa deploy lần đầu) — không đổi
    gì so với kế hoạch cũ, DNS `admin-phongve.hanoisuntravel.com` vẫn trỏ
    Vercel như bình thường (SSO không phụ thuộc worker).
-5. Vào trang "Đăng nhập lại Zalo" trên web, bấm nút, quét QR bằng acc Zalo
-   phụ — lấy session Zalo thật lần đầu tiên (worker sẽ tự đồng bộ danh
-   sách nhóm ngay sau đó).
+5. MỖI nhân viên cần dùng tự vào trang "Đăng nhập lại Zalo", bấm nút, quét
+   QR bằng đúng acc Zalo của mình — session cũ (dùng chung) đã mất khi
+   đổi cấu trúc bảng, không tự khôi phục được.
 6. Test gửi tin thật vào 1 nhóm Zalo + test SSO thật giữa 2 domain trên
    trình duyệt (chưa test qua bao giờ, mới chỉ đúng logic + tsc sạch).

@@ -2,9 +2,11 @@ import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { requirePhongVe } from '@/lib/require-phong-ve'
 
-// GET — danh sách nhóm Zalo thật, do worker/ (Railway) đồng bộ định kỳ vào
-// bảng zalo_groups (xem worker/index.js syncGroups()). Chỉ đọc, không có
-// POST — nhóm mới xuất hiện tự nhiên sau lần đồng bộ kế tiếp của worker.
+// GET — danh sách nhóm Zalo thật CỦA CHÍNH người đang gọi, do worker/
+// (Railway) đồng bộ định kỳ vào bảng zalo_groups (xem worker/index.js
+// syncGroups()) — mỗi user_id chỉ thấy nhóm từ tài khoản Zalo họ tự đăng
+// nhập, không phải danh sách chung. Chỉ đọc, không có POST — nhóm mới
+// xuất hiện tự nhiên sau lần đồng bộ kế tiếp của worker.
 export async function GET() {
   const user = await requirePhongVe()
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
@@ -13,6 +15,7 @@ export async function GET() {
   const { data, error } = await admin
     .from('zalo_groups')
     .select('*')
+    .eq('user_id', user.id)
     .order('zalo_group_name', { ascending: true })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 })

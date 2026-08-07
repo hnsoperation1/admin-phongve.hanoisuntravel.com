@@ -2,14 +2,19 @@
 // serverless) — tách riêng khỏi app Next.js (vẫn ở Vercel) để nếu worker
 // này crash/lỗi session Zalo thì không kéo theo UI/dashboard.
 //
-// 2 việc chạy song song, đều poll bảng Supabase (không cần route HTTP
+// Mỗi nhân viên CRM tự đăng nhập Zalo RIÊNG của mình (xem
+// migration_zalo_session_per_user.sql) — worker giữ NHIỀU kết nối Zalo
+// cùng lúc trong RAM, khoá theo user_id (CRM users.id), KHÔNG còn 1 tài
+// khoản Zalo chung cho cả team như trước.
+//
+// 3 việc chạy song song, đều poll bảng Supabase (không cần route HTTP
 // gọi vào worker, worker cũng không mở port nào):
-//   1. processDueJobs()   — gửi các job đến hạn trong zalo_scheduled_messages
-//   2. checkLoginRequest() — nếu ai đó bấm "Đăng nhập lại Zalo" trên web
-//      (ghi zalo_session.status='requested'), worker tự quét QR, ghi ảnh
-//      QR + credentials mới vào Supabase để web hiển thị/lưu lại. Nhờ vậy
-//      không cần ZALO_SESSION_CREDENTIALS trên Railway nữa — worker tự
-//      đọc session mới nhất từ Supabase lúc khởi động.
+//   1. processDueJobs()    — gửi job đến hạn bằng ĐÚNG tài khoản Zalo của
+//      người tạo lịch (zalo_scheduled_messages.created_by)
+//   2. checkLoginRequests() — mỗi dòng zalo_session status='requested' là
+//      1 nhân viên đang bấm "Đăng nhập lại Zalo" trên trang RIÊNG của họ
+//   3. checkSyncRequests()  — mỗi dòng sync_requested=true là 1 nhân viên
+//      bấm "Đồng bộ ngay" ở /danh-muc-zalo
 import { Zalo, ThreadType, LoginQRCallbackEventType } from 'zca-js'
 import { createClient } from '@supabase/supabase-js'
 
@@ -17,7 +22,7 @@ const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 20_000)
 const LOGIN_CHECK_INTERVAL_MS = Number(process.env.LOGIN_CHECK_INTERVAL_MS ?? 4_000)
 const GROUP_SYNC_INTERVAL_MS = Number(process.env.GROUP_SYNC_INTERVAL_MS ?? 5 * 60_000)
 const CONTACT_SYNC_INTERVAL_MS = Number(process.env.CONTACT_SYNC_INTERVAL_MS ?? 5 * 60_000)
-const SESSION_ROW_ID = 1
+const GROUP_INFO_BATCH_SIZE = 50
 
 function requireEnv(name) {
   const v = process.env[name]
@@ -31,10 +36,11 @@ const supabase = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 )
 
-// Session Zalo hiện tại trong RAM. null = chưa đăng nhập, chờ ai đó bấm
-// "Đăng nhập lại" trên web — processDueJobs() sẽ tự bỏ qua cho tới lúc đó.
-let api = null
-let loginInProgress = false
+// sessions: user_id -> api instance (zca-js) đang sống trong RAM.
+// loginInProgress: user_id đang giữa luồng quét QR (tránh 2 tick xử lý
+// trùng cùng 1 người khi request kéo dài qua nhiều lần poll).
+const sessions = new Map()
+const loginInProgress = new Set()
 
 function computeNextRun(runAt, recurrence) {
   const next = new Date(runAt)
@@ -56,9 +62,9 @@ function toVnDateStr(date) {
   return `${vn.getUTCFullYear()}-${pad(vn.getUTCMonth() + 1)}-${pad(vn.getUTCDate())}`
 }
 
+// Gửi job đến hạn bằng ĐÚNG tài khoản Zalo của người tạo lịch
+// (job.created_by) — không còn 1 tài khoản chung cho cả team.
 async function processDueJobs() {
-  if (!api) return
-
   const { data: due, error } = await supabase
     .from('zalo_scheduled_messages')
     .select('*')
@@ -71,6 +77,18 @@ async function processDueJobs() {
   }
 
   for (const job of due ?? []) {
+    const api = sessions.get(job.created_by)
+    if (!api) {
+      // Người tạo lịch chưa đăng nhập Zalo (hoặc session hết hạn) — báo
+      // lỗi ngay, không được để job kẹt "pending" mãi mà không rõ vì sao
+      // chưa gửi.
+      await supabase.from('zalo_scheduled_messages').update({
+        status: 'error',
+        last_error: 'Người tạo lịch chưa đăng nhập Zalo (hoặc session đã hết hạn) — vào "Đăng nhập lại Zalo" rồi bấm Thử lại.',
+      }).eq('id', job.id)
+      console.error(`[worker] Job ${job.id} lỗi: user ${job.created_by} chưa có session Zalo sống`)
+      continue
+    }
     try {
       await api.sendMessage(job.message, job.zalo_group_id, ThreadType.Group)
       const nextRun = computeNextRun(new Date(job.run_at), job.recurrence)
@@ -82,7 +100,7 @@ async function processDueJobs() {
           ? { run_at: nextRun.toISOString(), last_sent_at: new Date().toISOString() }
           : { status: 'sent', last_sent_at: new Date().toISOString() },
       ).eq('id', job.id)
-      console.log(`[worker] Đã gửi job ${job.id} (${job.title})${pastEnd ? ' — đã tới recurrence_until, dừng lặp' : ''}`)
+      console.log(`[worker] Đã gửi job ${job.id} (${job.title}) qua tài khoản user ${job.created_by}${pastEnd ? ' — đã tới recurrence_until, dừng lặp' : ''}`)
     } catch (err) {
       // Lỗi thì đánh dấu 'error' và dừng lặp lại — tránh spam nhóm nếu lỗi
       // dai dẳng (vd session Zalo hết hạn); admin phải vào sửa/reset tay.
@@ -96,20 +114,15 @@ async function processDueJobs() {
   }
 }
 
-const GROUP_INFO_BATCH_SIZE = 50
-
-// Đồng bộ danh sách nhóm Zalo thật (tên + id) lên bảng zalo_groups để web
-// hiển thị checklist ở form "Thêm lịch gửi tin" — thay vì phải gõ tay
-// Thread ID. Chạy định kỳ (GROUP_SYNC_INTERVAL_MS) + gọi ngay sau khi login
-// thành công (xem tryLoadStoredSession/checkLoginRequest) để có dữ liệu
-// sớm nhất, không phải chờ tick đầu tiên.
+// Đồng bộ danh sách nhóm Zalo thật (tên + id) của user_id lên bảng
+// zalo_groups để web hiển thị checklist ở form "Thêm lịch gửi tin".
 //
 // getGroupInfo() nhận nhiều ID cùng lúc nhưng gửi hết trong 1 request nếu
-// không chia lô — acc ở nhiều nhóm dễ khiến request bị Zalo từ chối (đã
-// gặp: getAllFriends chạy được nhưng getGroupInfo lỗi âm thầm, 0 nhóm được
-// lưu). Chia theo GROUP_INFO_BATCH_SIZE + log riêng từng bước để lỗi lô
-// nào không làm mất toàn bộ danh sách, và biết chính xác bước nào hỏng.
-async function syncGroups() {
+// không chia lô — acc ở nhiều nhóm dễ khiến request bị Zalo từ chối. Chia
+// theo GROUP_INFO_BATCH_SIZE + log riêng từng bước để lỗi lô nào không
+// làm mất toàn bộ danh sách, và biết chính xác bước nào hỏng.
+async function syncGroups(userId) {
+  const api = sessions.get(userId)
   if (!api) return
 
   let groupIds
@@ -117,7 +130,7 @@ async function syncGroups() {
     const { gridVerMap } = await api.getAllGroups()
     groupIds = Object.keys(gridVerMap)
   } catch (err) {
-    console.error('[worker] Lỗi getAllGroups():', err instanceof Error ? err.message : err)
+    console.error(`[worker] Lỗi getAllGroups() cho user ${userId}:`, err instanceof Error ? err.message : err)
     return
   }
   if (groupIds.length === 0) return
@@ -128,33 +141,34 @@ async function syncGroups() {
     try {
       const { gridInfoMap } = await api.getGroupInfo(batch)
       for (const [id, info] of Object.entries(gridInfoMap)) {
-        rows.push({ zalo_group_id: id, zalo_group_name: info.name ?? null, synced_at: new Date().toISOString() })
+        rows.push({ user_id: userId, zalo_group_id: id, zalo_group_name: info.name ?? null, synced_at: new Date().toISOString() })
       }
     } catch (err) {
-      console.error(`[worker] Lỗi getGroupInfo() cho lô ${i}-${i + batch.length} (${batch.length} ID):`, err instanceof Error ? err.message : err)
+      console.error(`[worker] Lỗi getGroupInfo() cho user ${userId}, lô ${i}-${i + batch.length}:`, err instanceof Error ? err.message : err)
     }
   }
   if (rows.length === 0) {
-    console.error(`[worker] Không lấy được thông tin nhóm nào (tổng ${groupIds.length} ID từ getAllGroups) — xem lỗi getGroupInfo() ở trên`)
+    console.error(`[worker] Không lấy được thông tin nhóm nào cho user ${userId} (tổng ${groupIds.length} ID từ getAllGroups)`)
     return
   }
 
-  const { error } = await supabase.from('zalo_groups').upsert(rows, { onConflict: 'zalo_group_id' })
+  const { error } = await supabase.from('zalo_groups').upsert(rows, { onConflict: 'user_id,zalo_group_id' })
   if (error) console.error('[worker] Lỗi ghi zalo_groups:', error.message)
-  else console.log(`[worker] Đã đồng bộ ${rows.length}/${groupIds.length} nhóm Zalo`)
+  else console.log(`[worker] Đã đồng bộ ${rows.length}/${groupIds.length} nhóm Zalo cho user ${userId}`)
 }
 
-// Đồng bộ danh bạ bạn bè Zalo (cá nhân, khác nhóm) lên bảng zalo_contacts —
-// hiện chỉ để có sẵn dữ liệu, CHƯA dùng ở đâu (lịch gửi tin vẫn chỉ gửi
-// nhóm). Cùng nhịp chạy với syncGroups(): định kỳ + ngay sau login thành
-// công.
-async function syncContacts() {
+// Đồng bộ danh bạ bạn bè Zalo (cá nhân, khác nhóm) của user_id lên bảng
+// zalo_contacts — hiện chỉ để có sẵn dữ liệu, CHƯA dùng để gửi tin (lịch
+// gửi tin vẫn chỉ gửi nhóm).
+async function syncContacts(userId) {
+  const api = sessions.get(userId)
   if (!api) return
 
   const friends = await api.getAllFriends()
   if (!friends || friends.length === 0) return
 
   const rows = friends.map(f => ({
+    user_id: userId,
     zalo_user_id: f.userId,
     display_name: f.displayName ?? null,
     zalo_name: f.zaloName ?? null,
@@ -162,25 +176,33 @@ async function syncContacts() {
     synced_at: new Date().toISOString(),
   }))
 
-  const { error } = await supabase.from('zalo_contacts').upsert(rows, { onConflict: 'zalo_user_id' })
+  const { error } = await supabase.from('zalo_contacts').upsert(rows, { onConflict: 'user_id,zalo_user_id' })
   if (error) console.error('[worker] Lỗi đồng bộ danh bạ:', error.message)
-  else console.log(`[worker] Đã đồng bộ ${rows.length} liên hệ Zalo`)
+  else console.log(`[worker] Đã đồng bộ ${rows.length} liên hệ Zalo cho user ${userId}`)
 }
 
-// Nút "Đồng bộ ngay" trên web (trang /danh-muc-zalo) ghi
-// zalo_session.sync_requested=true — dùng chung nhịp poll nhanh
-// (LOGIN_CHECK_INTERVAL_MS) với luồng đăng nhập QR để phản hồi kịp thời,
-// không phải chờ tới lượt GROUP_SYNC_INTERVAL_MS/CONTACT_SYNC_INTERVAL_MS.
-async function checkSyncRequest() {
-  const { data: session } = await supabase
-    .from('zalo_session')
-    .select('sync_requested')
-    .eq('id', SESSION_ROW_ID)
-    .maybeSingle()
-  if (!session?.sync_requested) return
+async function syncAllGroups() {
+  for (const userId of sessions.keys()) await syncGroups(userId)
+}
 
-  await supabase.from('zalo_session').update({ sync_requested: false }).eq('id', SESSION_ROW_ID)
-  await Promise.all([syncGroups(), syncContacts()])
+async function syncAllContacts() {
+  for (const userId of sessions.keys()) await syncContacts(userId)
+}
+
+// Nút "Đồng bộ ngay" ghi sync_requested=true trên đúng dòng của user đó —
+// quét TẤT CẢ dòng đang bật cờ (thường chỉ 1 tại 1 thời điểm) mỗi ~4s,
+// dùng chung nhịp poll nhanh với luồng đăng nhập QR.
+async function checkSyncRequests() {
+  const { data: rows } = await supabase
+    .from('zalo_session')
+    .select('user_id')
+    .eq('sync_requested', true)
+  if (!rows || rows.length === 0) return
+
+  for (const row of rows) {
+    await supabase.from('zalo_session').update({ sync_requested: false }).eq('user_id', row.user_id)
+    await Promise.all([syncGroups(row.user_id), syncContacts(row.user_id)])
+  }
 }
 
 function eventToPatch(event) {
@@ -198,19 +220,26 @@ function eventToPatch(event) {
   }
 }
 
-async function checkLoginRequest() {
-  if (loginInProgress) return
-
-  const { data: session } = await supabase
+// Xử lý MỌI yêu cầu đăng nhập đang chờ (status='requested') — mỗi nhân
+// viên bấm nút ở trang riêng của mình ghi đúng dòng user_id của họ, worker
+// xử lý song song (không đợi người này quét xong QR mới xử lý người kia).
+async function checkLoginRequests() {
+  const { data: rows } = await supabase
     .from('zalo_session')
-    .select('status')
-    .eq('id', SESSION_ROW_ID)
-    .maybeSingle()
-  if (!session || session.status !== 'requested') return
+    .select('user_id')
+    .eq('status', 'requested')
+  if (!rows || rows.length === 0) return
 
-  loginInProgress = true
+  for (const row of rows) {
+    if (loginInProgress.has(row.user_id)) continue
+    handleLoginRequest(row.user_id).catch(err => console.error(`[worker] Lỗi xử lý đăng nhập user ${row.user_id}:`, err))
+  }
+}
+
+async function handleLoginRequest(userId) {
+  loginInProgress.add(userId)
   let terminal = false // đã có kết quả rõ ràng (expired/declined) từ callback, khỏi ghi đè 'error' chung chung
-  await supabase.from('zalo_session').update({ status: 'in_progress', qr_image: null, error_message: null }).eq('id', SESSION_ROW_ID)
+  await supabase.from('zalo_session').update({ status: 'in_progress', qr_image: null, error_message: null }).eq('user_id', userId)
 
   try {
     const zalo = new Zalo()
@@ -220,7 +249,7 @@ async function checkLoginRequest() {
       const patch = eventToPatch(event)
       if (patch) {
         if (patch.status === 'expired' || patch.status === 'declined') terminal = true
-        supabase.from('zalo_session').update(patch).eq('id', SESSION_ROW_ID)
+        supabase.from('zalo_session').update(patch).eq('user_id', userId)
           .then(({ error }) => { if (error) console.error('[worker] Lỗi ghi trạng thái QR:', error.message) })
       }
       if (event.type === LoginQRCallbackEventType.GotLoginInfo) {
@@ -230,42 +259,47 @@ async function checkLoginRequest() {
 
     await supabase.from('zalo_session').update({
       status: 'done', credentials, qr_image: null, error_message: null,
-    }).eq('id', SESSION_ROW_ID)
-    api = newApi
-    console.log('[worker] Đăng nhập lại qua QR thành công, đã cập nhật session mới')
-    syncGroups().catch(err => console.error('[worker] Lỗi đồng bộ nhóm sau đăng nhập:', err))
-    syncContacts().catch(err => console.error('[worker] Lỗi đồng bộ danh bạ sau đăng nhập:', err))
+    }).eq('user_id', userId)
+    sessions.set(userId, newApi)
+    console.log(`[worker] User ${userId} đăng nhập Zalo qua QR thành công`)
+    syncGroups(userId).catch(err => console.error('[worker] Lỗi đồng bộ nhóm sau đăng nhập:', err))
+    syncContacts(userId).catch(err => console.error('[worker] Lỗi đồng bộ danh bạ sau đăng nhập:', err))
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     if (!terminal) {
-      await supabase.from('zalo_session').update({ status: 'error', error_message: message, qr_image: null }).eq('id', SESSION_ROW_ID)
+      await supabase.from('zalo_session').update({ status: 'error', error_message: message, qr_image: null }).eq('user_id', userId)
     }
-    console.error('[worker] Lỗi xử lý yêu cầu đăng nhập lại:', message)
+    console.error(`[worker] Lỗi xử lý đăng nhập user ${userId}:`, message)
   } finally {
-    loginInProgress = false
+    loginInProgress.delete(userId)
   }
 }
 
-async function tryLoadStoredSession() {
-  const { data } = await supabase.from('zalo_session').select('credentials').eq('id', SESSION_ROW_ID).maybeSingle()
-  if (!data?.credentials) {
-    console.log('[worker] Chưa có session Zalo nào được lưu — vào web bấm "Đăng nhập lại Zalo" để quét QR.')
+// Lúc khởi động: nạp lại TOÀN BỘ session đã lưu (mỗi nhân viên từng đăng
+// nhập trước đó), không chỉ 1 dòng cố định như hồi còn 1 bot chung.
+async function loadStoredSessions() {
+  const { data } = await supabase.from('zalo_session').select('user_id, credentials').not('credentials', 'is', null)
+  if (!data || data.length === 0) {
+    console.log('[worker] Chưa có session Zalo nào được lưu — mỗi người tự vào "Đăng nhập lại Zalo" để quét QR.')
     return
   }
-  try {
-    const zalo = new Zalo()
-    api = await zalo.login(data.credentials)
-    console.log('[worker] Login Zalo thành công (dùng session đã lưu trong Supabase)')
-    syncGroups().catch(err => console.error('[worker] Lỗi đồng bộ nhóm sau đăng nhập:', err))
-    syncContacts().catch(err => console.error('[worker] Lỗi đồng bộ danh bạ sau đăng nhập:', err))
-  } catch (err) {
-    console.error('[worker] Session đã lưu không login được nữa (có thể hết hạn):', err)
-    console.log('[worker] Vào web bấm "Đăng nhập lại Zalo" để quét QR mới.')
+  for (const row of data) {
+    try {
+      const zalo = new Zalo()
+      const api = await zalo.login(row.credentials)
+      sessions.set(row.user_id, api)
+      console.log(`[worker] Login Zalo thành công cho user ${row.user_id} (dùng session đã lưu trong Supabase)`)
+      syncGroups(row.user_id).catch(err => console.error('[worker] Lỗi đồng bộ nhóm sau đăng nhập:', err))
+      syncContacts(row.user_id).catch(err => console.error('[worker] Lỗi đồng bộ danh bạ sau đăng nhập:', err))
+    } catch (err) {
+      console.error(`[worker] Session đã lưu của user ${row.user_id} không login được nữa (có thể hết hạn):`, err)
+      console.log(`[worker] User ${row.user_id} cần vào "Đăng nhập lại Zalo" để quét QR mới.`)
+    }
   }
 }
 
 async function main() {
-  await tryLoadStoredSession()
+  await loadStoredSessions()
 
   const tick = (fn) => () => {
     fn().catch((err) => {
@@ -275,10 +309,10 @@ async function main() {
   }
 
   const runJobsTick = tick(processDueJobs)
-  const runLoginTick = tick(checkLoginRequest)
-  const runGroupSyncTick = tick(syncGroups)
-  const runContactSyncTick = tick(syncContacts)
-  const runSyncRequestTick = tick(checkSyncRequest)
+  const runLoginTick = tick(checkLoginRequests)
+  const runGroupSyncTick = tick(syncAllGroups)
+  const runContactSyncTick = tick(syncAllContacts)
+  const runSyncRequestTick = tick(checkSyncRequests)
 
   runJobsTick()
   runLoginTick()
