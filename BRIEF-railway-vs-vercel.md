@@ -181,12 +181,48 @@ riêng. Giờ tách hẳn: bảng mới `phong_ve_allowlist` (Supabase, xem
   vào được bằng gõ thẳng URL, trang/API vẫn tự chặn bằng
   `requireSuperAdmin()` như cũ, đây chỉ là ẩn khỏi menu.
 
+## Cập nhật (2026-08-07, cùng ngày): sửa lịch có sẵn + lặp lại có ngày kết thúc
+
+- Bấm vào tiêu đề 1 dòng trong bảng → mở lại form dạng "Sửa lịch gửi tin",
+  PATCH đúng dòng đó (khác lúc tạo mới — tạo mới vẫn có thể fan-out nhiều
+  giờ × nhiều nhóm thành nhiều dòng, sửa thì khoá về đúng 1 giờ/1 nhóm của
+  dòng đang sửa, chọn nhóm khác lúc sửa thay thế luôn thay vì cộng dồn).
+- "Lặp lại" (khác "Chỉ 1 lần") giờ có thêm ô "Lặp lại đến ngày" (tuỳ
+  chọn) — cột mới `recurrence_until` (xem
+  `migration_zalo_scheduled_messages_recurrence_until.sql`). Worker
+  (`computeNextRun()` + `toVnDateStr()` ở `worker/index.js`) tự dừng lặp
+  (chuyển `status='sent'`) khi lần chạy kế tiếp vượt quá ngày này, so theo
+  ngày lịch VN (UTC+7) chứ không phải ngày UTC thô để tránh lệch ngày với
+  job chạy giờ khuya. Để trống = lặp mãi mãi như hành vi cũ.
+
+## Đang dở (2026-08-07): tách session Zalo theo từng nhân viên
+
+**Đã xác nhận với user, CHƯA áp dụng xong** — mới viết
+`migration_zalo_session_per_user.sql` (DROP + tạo lại 3 bảng zalo_session/
+zalo_groups/zalo_contacts với `user_id` thay vì 1 dòng chung), CHƯA sửa
+`worker/index.js` (cần giữ nhiều kết nối Zalo cùng lúc, `Map<user_id, api>`
+thay vì 1 biến `api` toàn cục), CHƯA sửa `/api/zalo-session`,
+`/api/zalo-groups`, `/api/zalo-contacts`, `/api/zalo-sync-request` (đều
+đang thao tác trên 1 dòng cố định `id=1`, cần đổi sang lọc theo
+`user.id` của người gọi). Mục tiêu: mỗi lịch gửi tin gửi bằng ĐÚNG tài
+khoản Zalo của người tạo lịch (`created_by`, cột có sẵn) thay vì 1 bot
+chung cho cả team. Việc còn lại khi quay lại làm tiếp:
+1. Rewrite `worker/index.js` (đã có plan chi tiết, nhiều hàm sync/login
+   cần nhận thêm tham số `userId`).
+2. Sửa 4 route API kể trên lọc theo user hiện tại.
+3. Chạy migration mới — **MẤT session/nhóm/danh bạ hiện có** (chỉ có 1
+   session test, chưa phải dữ liệu thật), mỗi người cần quét QR lại 1 lần.
+
 ## Việc còn lại (chưa làm)
 
-1. Chạy 6 migration trên Supabase SQL Editor:
+1. Chạy 7 migration trên Supabase SQL Editor:
    `migration_zalo_scheduled_messages.sql`, `migration_zalo_session.sql`,
    `migration_zalo_groups.sql`, `migration_zalo_contacts.sql`,
-   `migration_zalo_sync_requested.sql`, `migration_phong_ve_allowlist.sql`.
+   `migration_zalo_sync_requested.sql`, `migration_phong_ve_allowlist.sql`,
+   `migration_zalo_scheduled_messages_recurrence_until.sql`.
+   (KHÔNG chạy `migration_zalo_session_per_user.sql` vội — code phụ thuộc
+   nó chưa xong, chạy sớm sẽ làm sập tính năng đăng nhập Zalo/lịch gửi tin
+   hiện tại.)
 2. Vào `crm.hanoisuntravel.com/admin/users`, bật "App Phòng vé" cho từng
    tài khoản cần dùng admin-phongve (super_admin không cần, luôn vào
    được) — quan trọng: làm TRƯỚC khi deploy code này, nếu không ai đang

@@ -45,6 +45,17 @@ function computeNextRun(runAt, recurrence) {
   return next
 }
 
+// recurrence_until là cột DATE thuần theo giờ VN (người dùng chọn trên
+// UI), so sánh phải quy nextRun về NGÀY LỊCH VN chứ không phải ngày UTC —
+// nếu không, job chạy giờ khuya VN (~UTC sáng hôm sau) có thể bị lệch
+// ngày. +7h vào UTC rồi đọc bằng getUTC* là cách quy đổi không phụ thuộc
+// timezone của máy chạy worker (Railway mặc định UTC).
+function toVnDateStr(date) {
+  const vn = new Date(date.getTime() + 7 * 60 * 60 * 1000)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${vn.getUTCFullYear()}-${pad(vn.getUTCMonth() + 1)}-${pad(vn.getUTCDate())}`
+}
+
 async function processDueJobs() {
   if (!api) return
 
@@ -63,12 +74,15 @@ async function processDueJobs() {
     try {
       await api.sendMessage(job.message, job.zalo_group_id, ThreadType.Group)
       const nextRun = computeNextRun(new Date(job.run_at), job.recurrence)
+      // recurrence_until (NULL = lặp mãi mãi): lần chạy kế tiếp vượt quá
+      // ngày này thì dừng lặp, coi như job đã hoàn tất.
+      const pastEnd = nextRun && job.recurrence_until && toVnDateStr(nextRun) > job.recurrence_until
       await supabase.from('zalo_scheduled_messages').update(
-        nextRun
+        nextRun && !pastEnd
           ? { run_at: nextRun.toISOString(), last_sent_at: new Date().toISOString() }
           : { status: 'sent', last_sent_at: new Date().toISOString() },
       ).eq('id', job.id)
-      console.log(`[worker] Đã gửi job ${job.id} (${job.title})`)
+      console.log(`[worker] Đã gửi job ${job.id} (${job.title})${pastEnd ? ' — đã tới recurrence_until, dừng lặp' : ''}`)
     } catch (err) {
       // Lỗi thì đánh dấu 'error' và dừng lặp lại — tránh spam nhóm nếu lỗi
       // dai dẳng (vd session Zalo hết hạn); admin phải vào sửa/reset tay.

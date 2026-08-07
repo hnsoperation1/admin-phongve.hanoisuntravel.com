@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { RefreshCw, Plus, Loader2, X } from 'lucide-react'
+import { RefreshCw, Plus, Loader2, X, Search, Pencil } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
 
 type ScheduledMessage = {
@@ -12,6 +12,7 @@ type ScheduledMessage = {
   zalo_group_name: string | null
   run_at: string
   recurrence: 'once' | 'daily' | 'weekly' | 'monthly'
+  recurrence_until: string | null
   status: 'pending' | 'sent' | 'error' | 'cancelled'
   last_error: string | null
   last_sent_at: string | null
@@ -43,6 +44,19 @@ function dateTimeToIso(dateStr: string, timeStr: string): string | null {
   return isNaN(d.getTime()) ? null : d.toISOString()
 }
 
+function toDateInputValue(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+// recurrence_until là cột DATE thuần "yyyy-mm-dd" (không có giờ/timezone)
+// — đổi trực tiếp qua string, KHÔNG dựng Date rồi format lại (dễ lệch
+// ngày do parse UTC midnight rồi quy đổi giờ local).
+function formatDateOnly(s: string): string {
+  const [y, m, d] = s.split('-')
+  return `${d}/${m}/${y}`
+}
+
 type GroupRef = { id: string; name: string | null }
 
 export default function LichGuiTinPage() {
@@ -51,15 +65,18 @@ export default function LichGuiTinPage() {
   const [loadError, setLoadError] = useState(false)
   const [formOpen, setFormOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [editingJob, setEditingJob] = useState<ScheduledMessage | null>(null)
 
   const [title, setTitle] = useState('')
   const [message, setMessage] = useState('')
   const [date, setDate] = useState('')
   const [times, setTimes] = useState<string[]>([''])
   const [recurrence, setRecurrence] = useState('daily')
+  const [recurrenceUntil, setRecurrenceUntil] = useState('')
   const [selectedGroups, setSelectedGroups] = useState<GroupRef[]>([])
   const [knownGroups, setKnownGroups] = useState<GroupRef[]>([])
   const [groupsLoaded, setGroupsLoaded] = useState(false)
+  const [groupSearch, setGroupSearch] = useState('')
 
   // Danh sách nhóm CHỈ lấy từ đồng bộ thật với Zalo (worker/index.js
   // syncGroups(), xem BRIEF-railway-vs-vercel.md) — không cho gõ tay Thread
@@ -76,6 +93,10 @@ export default function LichGuiTinPage() {
       })
       .finally(() => setGroupsLoaded(true))
   }, [])
+
+  const filteredGroups = groupSearch.trim()
+    ? knownGroups.filter(g => (g.name ?? g.id).toLowerCase().includes(groupSearch.trim().toLowerCase()))
+    : knownGroups
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -98,12 +119,33 @@ export default function LichGuiTinPage() {
   }, [loadData])
 
   function openAdd() {
+    setEditingJob(null)
     setTitle('')
     setMessage('')
     setDate('')
     setTimes([''])
     setRecurrence('daily')
+    setRecurrenceUntil('')
     setSelectedGroups([])
+    setGroupSearch('')
+    setFormOpen(true)
+  }
+
+  // Sửa 1 dòng đã có — khác lúc tạo mới (có thể tạo hàng loạt theo
+  // giờ×nhóm), sửa chỉ áp dụng cho ĐÚNG 1 dòng đang bấm, nên khoá về 1
+  // giờ/1 nhóm (xem toggleGroup, save() bên dưới).
+  function openEdit(job: ScheduledMessage) {
+    setEditingJob(job)
+    setTitle(job.title)
+    setMessage(job.message)
+    const d = new Date(job.run_at)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    setDate(toDateInputValue(d))
+    setTimes([`${pad(d.getHours())}:${pad(d.getMinutes())}`])
+    setRecurrence(job.recurrence)
+    setRecurrenceUntil(job.recurrence_until ?? '')
+    setSelectedGroups([{ id: job.zalo_group_id, name: job.zalo_group_name }])
+    setGroupSearch('')
     setFormOpen(true)
   }
 
@@ -120,33 +162,64 @@ export default function LichGuiTinPage() {
   }
 
   function toggleGroup(g: GroupRef) {
+    // Đang sửa 1 dòng có sẵn → chỉ 1 nhóm/dòng, chọn nhóm khác thay thế
+    // luôn (giống radio) thay vì cộng dồn như lúc tạo mới.
+    if (editingJob) {
+      setSelectedGroups([g])
+      return
+    }
     setSelectedGroups(prev => (prev.some(x => x.id === g.id) ? prev.filter(x => x.id !== g.id) : [...prev, g]))
   }
 
-  // Mỗi (giờ chạy × nhóm đã chọn) là 1 job riêng — worker chỉ hiểu 1
-  // run_at/1 nhóm mỗi dòng, nên "nhiều giờ trong ngày" + "nhiều nhóm" được
-  // hiện thực bằng cách tạo nhiều dòng cùng lúc từ 1 lần lưu form.
+  // Tạo mới: mỗi (giờ chạy × nhóm đã chọn) là 1 job riêng — worker chỉ
+  // hiểu 1 run_at/1 nhóm mỗi dòng, nên "nhiều giờ trong ngày" + "nhiều
+  // nhóm" được hiện thực bằng cách tạo nhiều dòng cùng lúc từ 1 lần lưu
+  // form. "Lặp lại đến ngày" (recurrenceUntil) là 1 cột trên CHÍNH job đó
+  // — worker tự dừng lặp khi vượt ngày này (xem computeNextRun() ở
+  // worker/index.js), KHÔNG phải tạo nhiều dòng theo từng ngày.
+  // Sửa: chỉ PATCH đúng 1 dòng đang mở, không fan-out.
   async function save() {
     const validTimes = times.map(t => t.trim()).filter(Boolean)
     if (!title.trim() || !message.trim() || !date || validTimes.length === 0 || selectedGroups.length === 0) return
     setSaving(true)
     try {
-      for (const t of validTimes) {
-        const iso = dateTimeToIso(date, t)
-        if (!iso) continue
-        for (const g of selectedGroups) {
-          await fetch('/api/lich-gui-tin', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              title: title.trim(),
-              message,
-              zalo_group_id: g.id,
-              zalo_group_name: g.name,
-              run_at: iso,
-              recurrence,
-            }),
-          })
+      const recurrence_until = recurrence !== 'once' && recurrenceUntil ? recurrenceUntil : null
+      if (editingJob) {
+        const iso = dateTimeToIso(date, validTimes[0])
+        if (!iso) return
+        const g = selectedGroups[0]
+        await fetch(`/api/lich-gui-tin/${editingJob.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: title.trim(),
+            message,
+            zalo_group_id: g.id,
+            zalo_group_name: g.name,
+            run_at: iso,
+            recurrence,
+            recurrence_until,
+          }),
+        })
+      } else {
+        for (const t of validTimes) {
+          const iso = dateTimeToIso(date, t)
+          if (!iso) continue
+          for (const g of selectedGroups) {
+            await fetch('/api/lich-gui-tin', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title: title.trim(),
+                message,
+                zalo_group_id: g.id,
+                zalo_group_name: g.name,
+                run_at: iso,
+                recurrence,
+                recurrence_until,
+              }),
+            })
+          }
         }
       }
       setFormOpen(false)
@@ -191,11 +264,11 @@ export default function LichGuiTinPage() {
       {formOpen && (
         <div className="fixed inset-y-0 left-52 right-0 z-50 flex justify-end bg-black/30" onClick={() => setFormOpen(false)}>
           <div className="bg-white shadow-xl w-full h-full p-5 overflow-y-auto" onClick={e => e.stopPropagation()}>
-            <h2 className="font-bold text-gray-900 mb-3">Thêm lịch gửi tin</h2>
+            <h2 className="font-bold text-gray-900 mb-3">{editingJob ? 'Sửa lịch gửi tin' : 'Thêm lịch gửi tin'}</h2>
             <div className="grid grid-cols-4 gap-4">
               <div className="space-y-3">
                 <div>
-                  <label className="block text-xs font-semibold text-gray-500 mb-1">Ngày chạy *</label>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1">{recurrence === 'once' ? 'Ngày chạy *' : 'Ngày bắt đầu *'}</label>
                   <input type="date" value={date} onChange={e => setDate(e.target.value)} className={INPUT} />
                 </div>
                 <div>
@@ -204,7 +277,7 @@ export default function LichGuiTinPage() {
                     {times.map((t, i) => (
                       <div key={i} className="flex items-center gap-1.5">
                         <input type="time" value={t} onChange={e => setTimeAt(i, e.target.value)} className={INPUT} />
-                        {times.length > 1 && (
+                        {!editingJob && times.length > 1 && (
                           <button type="button" onClick={() => removeTime(i)} className="p-2 text-gray-300 hover:text-red-500 transition-colors">
                             <X size={14} />
                           </button>
@@ -212,9 +285,11 @@ export default function LichGuiTinPage() {
                       </div>
                     ))}
                   </div>
-                  <button type="button" onClick={addTime} className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700">
-                    <Plus size={13} /> Thêm giờ chạy
-                  </button>
+                  {!editingJob && (
+                    <button type="button" onClick={addTime} className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700">
+                      <Plus size={13} /> Thêm giờ chạy
+                    </button>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-500 mb-1">Lặp lại</label>
@@ -222,6 +297,13 @@ export default function LichGuiTinPage() {
                     {Object.entries(RECURRENCE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                   </select>
                 </div>
+                {recurrence !== 'once' && (
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-500 mb-1">Lặp lại đến ngày</label>
+                    <input type="date" value={recurrenceUntil} min={date || undefined} onChange={e => setRecurrenceUntil(e.target.value)} className={INPUT} />
+                    <p className="text-[11px] text-gray-400 mt-1">Để trống = lặp mãi mãi, không tự dừng.</p>
+                  </div>
+                )}
               </div>
 
               <div className="col-span-2 space-y-3">
@@ -235,16 +317,23 @@ export default function LichGuiTinPage() {
                 </div>
               </div>
 
-              <div className="space-y-2">
+              <div className="flex flex-col h-full space-y-2">
                 <label className="block text-xs font-semibold text-gray-500 mb-1">Gửi vào nhóm *</label>
-                <div className="border border-gray-200 rounded-xl max-h-52 overflow-y-auto divide-y divide-gray-100">
+                <div className="relative">
+                  <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
+                  <input value={groupSearch} onChange={e => setGroupSearch(e.target.value)} placeholder="Tìm nhóm..."
+                    className="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-400" />
+                </div>
+                <div className="flex-1 min-h-40 border border-gray-200 rounded-xl overflow-y-auto divide-y divide-gray-100">
                   {!groupsLoaded ? (
                     <p className="text-xs text-gray-300 px-3 py-3">Đang tải danh sách nhóm...</p>
                   ) : knownGroups.length === 0 ? (
                     <p className="text-xs text-gray-300 px-3 py-3">
                       Chưa có nhóm nào — worker (Railway) cần đăng nhập Zalo và đồng bộ trước, xem trang &quot;Đăng nhập lại Zalo&quot;.
                     </p>
-                  ) : knownGroups.map(g => (
+                  ) : filteredGroups.length === 0 ? (
+                    <p className="text-xs text-gray-300 px-3 py-3">Không có nhóm nào khớp tìm kiếm.</p>
+                  ) : filteredGroups.map(g => (
                     <label key={g.id} className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 cursor-pointer hover:bg-gray-50">
                       <input type="checkbox" checked={selectedGroups.some(x => x.id === g.id)} onChange={() => toggleGroup(g)} />
                       <span className="truncate">{g.name ?? g.id}</span>
@@ -297,14 +386,22 @@ export default function LichGuiTinPage() {
               ) : jobs.length === 0 ? (
                 <tr><td colSpan={6} className="px-5 py-14 text-center text-gray-400">Chưa có lịch gửi tin nào.</td></tr>
               ) : jobs.map(j => (
-                <tr key={j.id} className="hover:bg-gray-50/70 transition-colors align-top">
-                  <td className="px-4 py-2.5">
-                    <div className="font-semibold text-gray-800">{j.title}</div>
+                <tr key={j.id} className="hover:bg-gray-50/70 transition-colors align-top group">
+                  <td className="px-4 py-2.5 cursor-pointer" onClick={() => openEdit(j)}>
+                    <div className="flex items-center gap-1.5">
+                      <div className="font-semibold text-gray-800 group-hover:text-brand-700">{j.title}</div>
+                      <Pencil size={11} className="text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                    </div>
                     <div className="text-xs text-gray-400 truncate max-w-xs">{j.message}</div>
                   </td>
                   <td className="px-4 py-2.5 text-gray-600">{j.zalo_group_name ?? j.zalo_group_id}</td>
                   <td className="px-4 py-2.5 text-gray-600 whitespace-nowrap">{formatDateTime(j.run_at)}</td>
-                  <td className="px-4 py-2.5 text-gray-600">{RECURRENCE_LABELS[j.recurrence] ?? j.recurrence}</td>
+                  <td className="px-4 py-2.5 text-gray-600">
+                    {RECURRENCE_LABELS[j.recurrence] ?? j.recurrence}
+                    {j.recurrence_until && (
+                      <div className="text-[11px] text-gray-400">đến {formatDateOnly(j.recurrence_until)}</div>
+                    )}
+                  </td>
                   <td className="px-4 py-2.5">
                     <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${STATUS_STYLE[j.status] ?? ''}`}>
                       {STATUS_LABELS[j.status] ?? j.status}
