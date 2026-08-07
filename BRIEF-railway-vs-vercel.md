@@ -141,11 +141,28 @@ Muốn gửi cho cá nhân thì cần thêm việc khác (cột phân biệt lo�
 nhận trên `zalo_scheduled_messages`, worker chọn đúng `ThreadType`, UI cho
 chọn cả bạn bè lẫn nhóm) — chưa làm, làm sau nếu cần.
 
+## Cập nhật (2026-08-07, cùng ngày): trang xem danh mục + nút "Đồng bộ ngay"
+
+Thêm trang `/danh-muc-zalo` (Sidebar) — 2 tab Nhóm/Bạn bè, chỉ xem, đọc từ
+`GET /api/zalo-groups` + `GET /api/zalo-contacts` (route mới, cùng
+`requireKeToan()`). Trước đó nhóm chỉ hiện trong checklist ở form "Thêm
+lịch gửi tin", danh bạ hoàn toàn không có UI nào — giờ có chỗ xem cả 2 mà
+không cần mở form tạo lịch.
+
+Thêm nút "Đồng bộ ngay" (khác nút tải lại thường) — bấm thì gọi
+`POST /api/zalo-sync-request` (route mới) ghi `zalo_session.sync_requested
+= true` (cột mới, xem `migration_zalo_sync_requested.sql`), worker/ poll
+cờ này mỗi ~4s (`checkSyncRequest()`, dùng chung nhịp
+`LOGIN_CHECK_INTERVAL_MS` với luồng đăng nhập QR) rồi tự gọi
+`syncGroups()`+`syncContacts()` ngay — không phải chờ tới lượt định kỳ
+(mặc định 5 phút). Trang tự đợi 6s rồi tải lại sau khi bấm nút.
+
 ## Việc còn lại (chưa làm)
 
-1. Chạy 4 migration trên Supabase SQL Editor:
+1. Chạy 5 migration trên Supabase SQL Editor:
    `migration_zalo_scheduled_messages.sql`, `migration_zalo_session.sql`,
-   `migration_zalo_groups.sql`, `migration_zalo_contacts.sql`.
+   `migration_zalo_groups.sql`, `migration_zalo_contacts.sql`,
+   `migration_zalo_sync_requested.sql`.
 2. Deploy `worker/` lên Railway (Root Directory = `worker`), set 2 env
    Supabase — xem `worker/README.md`.
 3. Deploy app Next.js chính lên Vercel (chưa deploy lần đầu) — không đổi

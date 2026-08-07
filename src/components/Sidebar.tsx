@@ -2,13 +2,14 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, CalendarClock, QrCode, LogOut } from 'lucide-react'
+import { LayoutDashboard, CalendarClock, QrCode, LogOut, BookUser } from 'lucide-react'
 import { useAuth } from '@/contexts/auth'
 import { getInitials } from '@/lib/utils'
 
 const NAV = [
   { href: '/', icon: LayoutDashboard, label: 'Tổng quan' },
   { href: '/lich-gui-tin', icon: CalendarClock, label: 'Lịch gửi tin Zalo' },
+  { href: '/danh-muc-zalo', icon: BookUser, label: 'Danh mục Zalo' },
   { href: '/zalo-session', icon: QrCode, label: 'Đăng nhập lại Zalo' },
 ]
 

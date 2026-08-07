@@ -129,6 +129,22 @@ async function syncContacts() {
   else console.log(`[worker] Đã đồng bộ ${rows.length} liên hệ Zalo`)
 }
 
+// Nút "Đồng bộ ngay" trên web (trang /danh-muc-zalo) ghi
+// zalo_session.sync_requested=true — dùng chung nhịp poll nhanh
+// (LOGIN_CHECK_INTERVAL_MS) với luồng đăng nhập QR để phản hồi kịp thời,
+// không phải chờ tới lượt GROUP_SYNC_INTERVAL_MS/CONTACT_SYNC_INTERVAL_MS.
+async function checkSyncRequest() {
+  const { data: session } = await supabase
+    .from('zalo_session')
+    .select('sync_requested')
+    .eq('id', SESSION_ROW_ID)
+    .maybeSingle()
+  if (!session?.sync_requested) return
+
+  await supabase.from('zalo_session').update({ sync_requested: false }).eq('id', SESSION_ROW_ID)
+  await Promise.all([syncGroups(), syncContacts()])
+}
+
 function eventToPatch(event) {
   switch (event.type) {
     case LoginQRCallbackEventType.QRCodeGenerated:
@@ -224,6 +240,7 @@ async function main() {
   const runLoginTick = tick(checkLoginRequest)
   const runGroupSyncTick = tick(syncGroups)
   const runContactSyncTick = tick(syncContacts)
+  const runSyncRequestTick = tick(checkSyncRequest)
 
   runJobsTick()
   runLoginTick()
@@ -231,6 +248,7 @@ async function main() {
   setInterval(runLoginTick, LOGIN_CHECK_INTERVAL_MS)
   setInterval(runGroupSyncTick, GROUP_SYNC_INTERVAL_MS)
   setInterval(runContactSyncTick, CONTACT_SYNC_INTERVAL_MS)
+  setInterval(runSyncRequestTick, LOGIN_CHECK_INTERVAL_MS)
 
   console.log(`[worker] Đang chạy — poll job mỗi ${POLL_INTERVAL_MS}ms, poll login-request mỗi ${LOGIN_CHECK_INTERVAL_MS}ms, đồng bộ nhóm mỗi ${GROUP_SYNC_INTERVAL_MS}ms, đồng bộ danh bạ mỗi ${CONTACT_SYNC_INTERVAL_MS}ms`)
 }
