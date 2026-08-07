@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { RefreshCw, Plus, Loader2, X, Search, Pencil } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
+import { useAuth } from '@/contexts/auth'
 
 type ScheduledMessage = {
   id: string
@@ -16,6 +17,8 @@ type ScheduledMessage = {
   status: 'pending' | 'sent' | 'error' | 'cancelled'
   last_error: string | null
   last_sent_at: string | null
+  created_by: string | null
+  creator: { id: string; full_name: string } | null
 }
 
 const RECURRENCE_LABELS: Record<string, string> = {
@@ -60,12 +63,14 @@ function formatDateOnly(s: string): string {
 type GroupRef = { id: string; name: string | null }
 
 export default function LichGuiTinPage() {
+  const { user } = useAuth()
   const [jobs, setJobs] = useState<ScheduledMessage[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(false)
   const [formOpen, setFormOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [editingJob, setEditingJob] = useState<ScheduledMessage | null>(null)
+  const [creatorFilter, setCreatorFilter] = useState('mine')
 
   const [title, setTitle] = useState('')
   const [message, setMessage] = useState('')
@@ -243,6 +248,20 @@ export default function LichGuiTinPage() {
     loadData()
   }
 
+  // Danh sách người tạo để chọn trong dropdown — suy từ chính các lịch đã
+  // tải (không có API "danh bạ nhân viên" riêng ở app này).
+  const creators = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const j of jobs) if (j.creator) map.set(j.creator.id, j.creator.full_name)
+    return Array.from(map, ([id, full_name]) => ({ id, full_name }))
+  }, [jobs])
+
+  const filteredJobs = useMemo(() => {
+    if (creatorFilter === 'all') return jobs
+    if (creatorFilter === 'mine') return jobs.filter(j => j.created_by === user?.id)
+    return jobs.filter(j => j.created_by === creatorFilter)
+  }, [jobs, creatorFilter, user])
+
   return (
     <div className="p-5 space-y-4">
       <div className="flex items-center justify-between">
@@ -259,6 +278,17 @@ export default function LichGuiTinPage() {
             <Plus size={15} /> Thêm lịch
           </button>
         </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <select value={creatorFilter} onChange={e => setCreatorFilter(e.target.value)}
+          className="px-3 py-1.5 rounded-xl text-sm font-semibold bg-gray-100 text-gray-600 border-none focus:outline-none focus:ring-2 focus:ring-brand-400">
+          <option value="mine">Của tôi</option>
+          <option value="all">Tất cả người tạo</option>
+          {creators.filter(c => c.id !== user?.id).map(c => (
+            <option key={c.id} value={c.id}>{c.full_name}</option>
+          ))}
+        </select>
       </div>
 
       {formOpen && (
@@ -383,9 +413,11 @@ export default function LichGuiTinPage() {
                   <p className="text-gray-400 mb-2">Không tải được dữ liệu, có thể do lỗi mạng.</p>
                   <button onClick={loadData} className="text-xs font-semibold text-brand-600 hover:text-brand-700 px-3 py-1.5 rounded-lg hover:bg-brand-50 transition-colors">Thử lại</button>
                 </td></tr>
-              ) : jobs.length === 0 ? (
-                <tr><td colSpan={6} className="px-5 py-14 text-center text-gray-400">Chưa có lịch gửi tin nào.</td></tr>
-              ) : jobs.map(j => (
+              ) : filteredJobs.length === 0 ? (
+                <tr><td colSpan={6} className="px-5 py-14 text-center text-gray-400">
+                  {jobs.length === 0 ? 'Chưa có lịch gửi tin nào.' : 'Không có lịch nào khớp bộ lọc người tạo.'}
+                </td></tr>
+              ) : filteredJobs.map(j => (
                 <tr key={j.id} className="hover:bg-gray-50/70 transition-colors align-top group">
                   <td className="px-4 py-2.5 cursor-pointer" onClick={() => openEdit(j)}>
                     <div className="flex items-center gap-1.5">
@@ -393,6 +425,9 @@ export default function LichGuiTinPage() {
                       <Pencil size={11} className="text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
                     </div>
                     <div className="text-xs text-gray-400 truncate max-w-xs">{j.message}</div>
+                    {creatorFilter === 'all' && j.creator && (
+                      <div className="text-[11px] text-gray-300">bởi {j.creator.full_name}</div>
+                    )}
                   </td>
                   <td className="px-4 py-2.5 text-gray-600">{j.zalo_group_name ?? j.zalo_group_id}</td>
                   <td className="px-4 py-2.5 text-gray-600 whitespace-nowrap">{formatDateTime(j.run_at)}</td>

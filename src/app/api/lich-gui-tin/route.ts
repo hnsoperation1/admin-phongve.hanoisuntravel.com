@@ -9,7 +9,7 @@ export async function GET() {
   const admin = createAdminClient()
   const { data, error } = await admin
     .from('zalo_scheduled_messages')
-    .select('*')
+    .select('*, creator:users!created_by(id, full_name)')
     .order('run_at', { ascending: true })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 })
