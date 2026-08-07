@@ -129,11 +129,23 @@ thành công. Web đọc qua `GET /api/zalo-groups` (route mới, cùng
 thay vì phải gõ tay — vẫn giữ nút "Thêm nhóm mới" làm phương án dự phòng
 (nhóm vừa tạo, chưa kịp tới lượt đồng bộ tiếp theo).
 
+## Cập nhật (2026-08-07, cùng ngày): đồng bộ thêm danh bạ bạn bè Zalo (chưa dùng để gửi tin)
+
+Ngoài nhóm, `worker/index.js` giờ có thêm `syncContacts()` — gọi
+`api.getAllFriends()` của zca-js, upsert vào bảng mới `zalo_contacts`
+(Supabase, xem `migration_zalo_contacts.sql`), cùng nhịp chạy với
+`syncGroups()` (định kỳ `CONTACT_SYNC_INTERVAL_MS` + ngay sau login).
+**Chỉ dừng ở mức đồng bộ dữ liệu sẵn có** — CHƯA có route API/UI nào dùng
+tới bảng này, vì lịch gửi tin hiện chỉ gửi vào nhóm (`ThreadType.Group`).
+Muốn gửi cho cá nhân thì cần thêm việc khác (cột phân biệt loại người
+nhận trên `zalo_scheduled_messages`, worker chọn đúng `ThreadType`, UI cho
+chọn cả bạn bè lẫn nhóm) — chưa làm, làm sau nếu cần.
+
 ## Việc còn lại (chưa làm)
 
-1. Chạy 3 migration trên Supabase SQL Editor:
+1. Chạy 4 migration trên Supabase SQL Editor:
    `migration_zalo_scheduled_messages.sql`, `migration_zalo_session.sql`,
-   `migration_zalo_groups.sql`.
+   `migration_zalo_groups.sql`, `migration_zalo_contacts.sql`.
 2. Deploy `worker/` lên Railway (Root Directory = `worker`), set 2 env
    Supabase — xem `worker/README.md`.
 3. Deploy app Next.js chính lên Vercel (chưa deploy lần đầu) — không đổi

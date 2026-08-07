@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { RefreshCw, Plus, Loader2, X } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
 
@@ -58,34 +58,24 @@ export default function LichGuiTinPage() {
   const [times, setTimes] = useState<string[]>([''])
   const [recurrence, setRecurrence] = useState('daily')
   const [selectedGroups, setSelectedGroups] = useState<GroupRef[]>([])
-  const [showAddGroup, setShowAddGroup] = useState(false)
-  const [newGroupId, setNewGroupId] = useState('')
-  const [newGroupName, setNewGroupName] = useState('')
-  const [syncedGroups, setSyncedGroups] = useState<GroupRef[]>([])
+  const [knownGroups, setKnownGroups] = useState<GroupRef[]>([])
+  const [groupsLoaded, setGroupsLoaded] = useState(false)
 
+  // Danh sách nhóm CHỈ lấy từ đồng bộ thật với Zalo (worker/index.js
+  // syncGroups(), xem BRIEF-railway-vs-vercel.md) — không cho gõ tay Thread
+  // ID nữa, vì nhóm phải tồn tại thật trên Zalo mới gửi tin được, gõ tay dễ
+  // sai/không kiểm chứng được.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetch('/api/zalo-groups')
       .then(res => res.json())
       .then(({ data }) => {
         if (Array.isArray(data)) {
-          setSyncedGroups(data.map((g: { zalo_group_id: string; zalo_group_name: string | null }) => ({ id: g.zalo_group_id, name: g.zalo_group_name })))
+          setKnownGroups(data.map((g: { zalo_group_id: string; zalo_group_name: string | null }) => ({ id: g.zalo_group_id, name: g.zalo_group_name })))
         }
       })
-      .catch(() => { /* im lặng — chỉ ảnh hưởng gợi ý, worker chưa đồng bộ lần nào cũng không sao (còn nút "Thêm nhóm mới") */ })
+      .finally(() => setGroupsLoaded(true))
   }, [])
-
-  // Danh sách nhóm để chọn — hợp giữa danh sách THẬT do worker đồng bộ từ
-  // Zalo (syncedGroups) và các nhóm đã dùng trong lịch cũ (phòng khi nhóm
-  // đó chưa/không còn nằm trong lần đồng bộ gần nhất, vd worker mới bật
-  // lại chưa kịp sync). Nhóm gõ tay ở "Thêm nhóm mới" sẽ tự xuất hiện ở
-  // đây từ lần đồng bộ kế tiếp của worker.
-  const knownGroups = useMemo(() => {
-    const map = new Map<string, string | null>()
-    for (const g of syncedGroups) map.set(g.id, g.name)
-    for (const j of jobs) if (!map.has(j.zalo_group_id)) map.set(j.zalo_group_id, j.zalo_group_name)
-    return Array.from(map, ([id, name]) => ({ id, name }))
-  }, [syncedGroups, jobs])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -114,9 +104,6 @@ export default function LichGuiTinPage() {
     setTimes([''])
     setRecurrence('daily')
     setSelectedGroups([])
-    setShowAddGroup(false)
-    setNewGroupId('')
-    setNewGroupName('')
     setFormOpen(true)
   }
 
@@ -134,15 +121,6 @@ export default function LichGuiTinPage() {
 
   function toggleGroup(g: GroupRef) {
     setSelectedGroups(prev => (prev.some(x => x.id === g.id) ? prev.filter(x => x.id !== g.id) : [...prev, g]))
-  }
-
-  function addNewGroup() {
-    const id = newGroupId.trim()
-    if (!id) return
-    setSelectedGroups(prev => (prev.some(x => x.id === id) ? prev : [...prev, { id, name: newGroupName.trim() || null }]))
-    setNewGroupId('')
-    setNewGroupName('')
-    setShowAddGroup(false)
   }
 
   // Mỗi (giờ chạy × nhóm đã chọn) là 1 job riêng — worker chỉ hiểu 1
@@ -259,9 +237,13 @@ export default function LichGuiTinPage() {
 
               <div className="space-y-2">
                 <label className="block text-xs font-semibold text-gray-500 mb-1">Gửi vào nhóm *</label>
-                <div className="border border-gray-200 rounded-xl max-h-40 overflow-y-auto divide-y divide-gray-100">
-                  {knownGroups.length === 0 ? (
-                    <p className="text-xs text-gray-300 px-3 py-3">Chưa có nhóm nào — thêm nhóm mới bên dưới.</p>
+                <div className="border border-gray-200 rounded-xl max-h-52 overflow-y-auto divide-y divide-gray-100">
+                  {!groupsLoaded ? (
+                    <p className="text-xs text-gray-300 px-3 py-3">Đang tải danh sách nhóm...</p>
+                  ) : knownGroups.length === 0 ? (
+                    <p className="text-xs text-gray-300 px-3 py-3">
+                      Chưa có nhóm nào — worker (Railway) cần đăng nhập Zalo và đồng bộ trước, xem trang &quot;Đăng nhập lại Zalo&quot;.
+                    </p>
                   ) : knownGroups.map(g => (
                     <label key={g.id} className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 cursor-pointer hover:bg-gray-50">
                       <input type="checkbox" checked={selectedGroups.some(x => x.id === g.id)} onChange={() => toggleGroup(g)} />
@@ -269,21 +251,6 @@ export default function LichGuiTinPage() {
                     </label>
                   ))}
                 </div>
-
-                {showAddGroup ? (
-                  <div className="space-y-2 border border-gray-200 rounded-xl p-3">
-                    <input value={newGroupId} onChange={e => setNewGroupId(e.target.value)} className={INPUT} placeholder="Thread ID nhóm (vd: 1234567890)" />
-                    <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)} className={INPUT} placeholder="Tên nhóm (chỉ để hiển thị)" />
-                    <div className="flex items-center gap-2">
-                      <button type="button" onClick={addNewGroup} className="flex-1 py-2 rounded-lg text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700 transition-colors">Thêm</button>
-                      <button type="button" onClick={() => { setShowAddGroup(false); setNewGroupId(''); setNewGroupName('') }} className="flex-1 py-2 rounded-lg text-xs font-semibold text-gray-500 hover:bg-gray-100 transition-colors">Huỷ</button>
-                    </div>
-                  </div>
-                ) : (
-                  <button type="button" onClick={() => setShowAddGroup(true)} className="flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700">
-                    <Plus size={13} /> Thêm nhóm mới
-                  </button>
-                )}
 
                 {selectedGroups.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">

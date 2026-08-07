@@ -16,6 +16,7 @@ import { createClient } from '@supabase/supabase-js'
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 20_000)
 const LOGIN_CHECK_INTERVAL_MS = Number(process.env.LOGIN_CHECK_INTERVAL_MS ?? 4_000)
 const GROUP_SYNC_INTERVAL_MS = Number(process.env.GROUP_SYNC_INTERVAL_MS ?? 5 * 60_000)
+const CONTACT_SYNC_INTERVAL_MS = Number(process.env.CONTACT_SYNC_INTERVAL_MS ?? 5 * 60_000)
 const SESSION_ROW_ID = 1
 
 function requireEnv(name) {
@@ -105,6 +106,29 @@ async function syncGroups() {
   else console.log(`[worker] Đã đồng bộ ${rows.length} nhóm Zalo`)
 }
 
+// Đồng bộ danh bạ bạn bè Zalo (cá nhân, khác nhóm) lên bảng zalo_contacts —
+// hiện chỉ để có sẵn dữ liệu, CHƯA dùng ở đâu (lịch gửi tin vẫn chỉ gửi
+// nhóm). Cùng nhịp chạy với syncGroups(): định kỳ + ngay sau login thành
+// công.
+async function syncContacts() {
+  if (!api) return
+
+  const friends = await api.getAllFriends()
+  if (!friends || friends.length === 0) return
+
+  const rows = friends.map(f => ({
+    zalo_user_id: f.userId,
+    display_name: f.displayName ?? null,
+    zalo_name: f.zaloName ?? null,
+    phone_number: f.phoneNumber ?? null,
+    synced_at: new Date().toISOString(),
+  }))
+
+  const { error } = await supabase.from('zalo_contacts').upsert(rows, { onConflict: 'zalo_user_id' })
+  if (error) console.error('[worker] Lỗi đồng bộ danh bạ:', error.message)
+  else console.log(`[worker] Đã đồng bộ ${rows.length} liên hệ Zalo`)
+}
+
 function eventToPatch(event) {
   switch (event.type) {
     case LoginQRCallbackEventType.QRCodeGenerated:
@@ -156,6 +180,7 @@ async function checkLoginRequest() {
     api = newApi
     console.log('[worker] Đăng nhập lại qua QR thành công, đã cập nhật session mới')
     syncGroups().catch(err => console.error('[worker] Lỗi đồng bộ nhóm sau đăng nhập:', err))
+    syncContacts().catch(err => console.error('[worker] Lỗi đồng bộ danh bạ sau đăng nhập:', err))
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     if (!terminal) {
@@ -178,6 +203,7 @@ async function tryLoadStoredSession() {
     api = await zalo.login(data.credentials)
     console.log('[worker] Login Zalo thành công (dùng session đã lưu trong Supabase)')
     syncGroups().catch(err => console.error('[worker] Lỗi đồng bộ nhóm sau đăng nhập:', err))
+    syncContacts().catch(err => console.error('[worker] Lỗi đồng bộ danh bạ sau đăng nhập:', err))
   } catch (err) {
     console.error('[worker] Session đã lưu không login được nữa (có thể hết hạn):', err)
     console.log('[worker] Vào web bấm "Đăng nhập lại Zalo" để quét QR mới.')
@@ -197,14 +223,16 @@ async function main() {
   const runJobsTick = tick(processDueJobs)
   const runLoginTick = tick(checkLoginRequest)
   const runGroupSyncTick = tick(syncGroups)
+  const runContactSyncTick = tick(syncContacts)
 
   runJobsTick()
   runLoginTick()
   setInterval(runJobsTick, POLL_INTERVAL_MS)
   setInterval(runLoginTick, LOGIN_CHECK_INTERVAL_MS)
   setInterval(runGroupSyncTick, GROUP_SYNC_INTERVAL_MS)
+  setInterval(runContactSyncTick, CONTACT_SYNC_INTERVAL_MS)
 
-  console.log(`[worker] Đang chạy — poll job mỗi ${POLL_INTERVAL_MS}ms, poll login-request mỗi ${LOGIN_CHECK_INTERVAL_MS}ms, đồng bộ nhóm mỗi ${GROUP_SYNC_INTERVAL_MS}ms`)
+  console.log(`[worker] Đang chạy — poll job mỗi ${POLL_INTERVAL_MS}ms, poll login-request mỗi ${LOGIN_CHECK_INTERVAL_MS}ms, đồng bộ nhóm mỗi ${GROUP_SYNC_INTERVAL_MS}ms, đồng bộ danh bạ mỗi ${CONTACT_SYNC_INTERVAL_MS}ms`)
 }
 
 main().catch((err) => {
