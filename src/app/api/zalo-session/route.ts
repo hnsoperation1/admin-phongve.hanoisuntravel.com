@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { requireKeToan } from '@/lib/require-ke-toan'
+import { requirePhongVe } from '@/lib/require-phong-ve'
 
 const SESSION_ROW_ID = 1
 
@@ -9,7 +9,7 @@ const SESSION_ROW_ID = 1
 const SAFE_COLUMNS = 'status, qr_image, error_message, requested_at, updated_at'
 
 export async function GET() {
-  const user = await requireKeToan()
+  const user = await requirePhongVe()
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const admin = createAdminClient()
@@ -26,7 +26,7 @@ export async function GET() {
 // Ghi status='requested' — worker (worker/index.js, đang chạy sẵn trên
 // Railway) tự poll thấy và xử lý, xem worker/README.md.
 export async function POST() {
-  const user = await requireKeToan()
+  const user = await requirePhongVe()
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const admin = createAdminClient()

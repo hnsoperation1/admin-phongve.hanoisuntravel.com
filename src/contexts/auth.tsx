@@ -21,18 +21,19 @@ async function fetchProfile(supabase: ReturnType<typeof createClient>, userId: s
 
   let ke_toan = false
   let ke_toan_super_admin = false
+  let phong_ve = false
   if (email) {
-    const { data: allow } = await supabase
-      .from('ke_toan_allowlist')
-      .select('is_super_admin')
-      .eq('email', email)
-      .maybeSingle()
+    const [{ data: allow }, { data: pv }] = await Promise.all([
+      supabase.from('ke_toan_allowlist').select('is_super_admin').eq('email', email).maybeSingle(),
+      supabase.from('phong_ve_allowlist').select('email').eq('email', email).maybeSingle(),
+    ])
     if (allow) {
       ke_toan = true
       ke_toan_super_admin = !!allow.is_super_admin
     }
+    phong_ve = !!pv
   }
-  return { ...data, ke_toan, ke_toan_super_admin } as User
+  return { ...data, ke_toan, ke_toan_super_admin, phong_ve } as User
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {

@@ -6,8 +6,12 @@ import Sidebar from './Sidebar'
 
 const CRM_LOGIN_URL = 'https://crm.hanoisuntravel.com/login'
 
-function hasAccess(user: { role: string; is_super_admin?: boolean; ke_toan?: boolean }) {
-  return user.is_super_admin || user.role === 'boss' || !!user.ke_toan
+// Quyền vào app này TÁCH RIÊNG khỏi ke_toan/role — chọn thủ công từng tài
+// khoản ở crm.hanoisuntravel.com/admin/users, mục "App Phòng vé"
+// (phong_ve_allowlist), không tự động cấp theo vai trò hay quyền Kế toán.
+// super_admin luôn vào được (bypass chung cho mọi app trong hệ sinh thái).
+function hasAccess(user: { is_super_admin?: boolean; phong_ve?: boolean }) {
+  return !!user.is_super_admin || !!user.phong_ve
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -44,7 +48,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="text-center max-w-sm">
           <div className="text-xl font-bold text-gray-800 mb-2">Không có quyền truy cập</div>
           <div className="text-sm text-gray-500">
-            Tài khoản {user.email} chưa được cấp quyền vào app Phòng Vé. Liên hệ admin để được thêm vào danh sách kế toán.
+            Tài khoản {user.email} chưa được cấp quyền vào app Phòng Vé. Liên hệ admin để được thêm vào danh sách "App Phòng vé" ở trang quản lý người dùng.
           </div>
         </div>
       </div>

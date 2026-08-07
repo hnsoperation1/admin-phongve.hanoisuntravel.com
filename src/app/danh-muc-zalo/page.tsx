@@ -1,8 +1,9 @@
 'use client'
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { RefreshCw, Search, Users, UserRound, Loader2 } from 'lucide-react'
+import { RefreshCw, Search, Users, UserRound, Loader2, ShieldOff } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
+import { useAuth } from '@/contexts/auth'
 
 type GroupRow = { zalo_group_id: string; zalo_group_name: string | null; synced_at: string }
 type ContactRow = { zalo_user_id: string; display_name: string | null; zalo_name: string | null; phone_number: string | null; synced_at: string }
@@ -12,7 +13,13 @@ type ContactRow = { zalo_user_id: string; display_name: string | null; zalo_name
 // gì ở đây, dữ liệu tự cập nhật ở lần đồng bộ kế tiếp của worker. Nhóm còn
 // dùng để chọn người nhận ở trang "Lịch gửi tin Zalo"; danh bạ hiện chưa
 // dùng ở đâu khác.
+//
+// Chỉ super_admin (danh bạ có SĐT cá nhân) — Sidebar đã ẩn link cho
+// non-superadmin, chặn thêm ở đây phòng vào thẳng URL. API cũng tự chặn
+// (/api/zalo-contacts, /api/zalo-sync-request dùng requireSuperAdmin()),
+// đây chỉ là lớp UX, không phải lớp bảo mật chính.
 export default function DanhMucZaloPage() {
+  const { user, loading: authLoading } = useAuth()
   const [tab, setTab] = useState<'groups' | 'contacts'>('groups')
   const [groups, setGroups] = useState<GroupRow[]>([])
   const [contacts, setContacts] = useState<ContactRow[]>([])
@@ -77,6 +84,18 @@ export default function DanhMucZaloPage() {
     if (rows.length === 0) return null
     return rows.reduce((latest, r) => (r.synced_at > latest ? r.synced_at : latest), rows[0].synced_at)
   }, [tab, groups, contacts])
+
+  if (!authLoading && !user?.is_super_admin) {
+    return (
+      <div className="p-5">
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-10 flex flex-col items-center text-center gap-2">
+          <ShieldOff size={28} className="text-gray-300" />
+          <p className="text-sm font-medium text-gray-600">Bạn không có quyền xem trang này.</p>
+          <p className="text-xs text-gray-400">Chỉ super_admin mới xem được Danh mục Zalo.</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="p-5 space-y-4">

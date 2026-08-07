@@ -157,19 +157,47 @@ cờ này mỗi ~4s (`checkSyncRequest()`, dùng chung nhịp
 `syncGroups()`+`syncContacts()` ngay — không phải chờ tới lượt định kỳ
 (mặc định 5 phút). Trang tự đợi 6s rồi tải lại sau khi bấm nút.
 
+## Cập nhật (2026-08-07, cùng ngày): quyền vào app tách riêng khỏi Kế toán
+
+Trước đó `AppShell.hasAccess()` cho vào nếu `is_super_admin || role==='boss'
+|| ke_toan` — tức là mượn tạm quyền Kế toán/role boss, không có khái niệm
+riêng. Giờ tách hẳn: bảng mới `phong_ve_allowlist` (Supabase, xem
+`migration_phong_ve_allowlist.sql`, cùng shape/convention với
+`ke_toan_allowlist` — có policy SELECT cho authenticated vì
+`contexts/auth.tsx` cần đọc thẳng để quyết định cho vào app hay không).
+
+- CRM (`crm.hanoisuntravel.com/admin/users`) có thêm mục "App Phòng vé"
+  (checkbox riêng, cạnh "App Kế toán") + route mới
+  `/api/admin/phong-ve-allowlist` — chọn thủ công từng tài khoản.
+- `AppShell.hasAccess()` giờ chỉ còn `is_super_admin || phong_ve` — KHÔNG
+  còn tự cấp theo `role==='boss'` hay `ke_toan` nữa. Ai đang vào được nhờ
+  2 quyền đó (không phải super_admin) sẽ MẤT quyền cho tới khi được thêm
+  vào `phong_ve_allowlist` — cần rà lại nếu có người đang dùng thật.
+- Server-side đổi tên `requireKeToan()` → `requirePhongVe()` (file
+  `src/lib/require-ke-toan.ts` → `src/lib/require-phong-ve.ts`), cũng bỏ
+  bypass `role==='boss'`, chỉ còn `is_super_admin` + `phong_ve_allowlist`.
+  `requireSuperAdmin()` (trang "Danh mục Zalo") giữ nguyên, chuyển file.
+- Sidebar: bỏ hẳn link "Danh mục Zalo" (kể cả cho super_admin) — trang chỉ
+  vào được bằng gõ thẳng URL, trang/API vẫn tự chặn bằng
+  `requireSuperAdmin()` như cũ, đây chỉ là ẩn khỏi menu.
+
 ## Việc còn lại (chưa làm)
 
-1. Chạy 5 migration trên Supabase SQL Editor:
+1. Chạy 6 migration trên Supabase SQL Editor:
    `migration_zalo_scheduled_messages.sql`, `migration_zalo_session.sql`,
    `migration_zalo_groups.sql`, `migration_zalo_contacts.sql`,
-   `migration_zalo_sync_requested.sql`.
-2. Deploy `worker/` lên Railway (Root Directory = `worker`), set 2 env
+   `migration_zalo_sync_requested.sql`, `migration_phong_ve_allowlist.sql`.
+2. Vào `crm.hanoisuntravel.com/admin/users`, bật "App Phòng vé" cho từng
+   tài khoản cần dùng admin-phongve (super_admin không cần, luôn vào
+   được) — quan trọng: làm TRƯỚC khi deploy code này, nếu không ai đang
+   dùng qua quyền boss/kế toán cũ sẽ bị khoá ngoài ngay khi deploy.
+3. Deploy `worker/` lên Railway (Root Directory = `worker`), set 2 env
    Supabase — xem `worker/README.md`.
-3. Deploy app Next.js chính lên Vercel (chưa deploy lần đầu) — không đổi
+4. Deploy app Next.js chính lên Vercel (chưa deploy lần đầu) — không đổi
    gì so với kế hoạch cũ, DNS `admin-phongve.hanoisuntravel.com` vẫn trỏ
    Vercel như bình thường (SSO không phụ thuộc worker).
-4. Vào trang "Đăng nhập lại Zalo" trên web, bấm nút, quét QR bằng acc Zalo
+5. Vào trang "Đăng nhập lại Zalo" trên web, bấm nút, quét QR bằng acc Zalo
    phụ — lấy session Zalo thật lần đầu tiên (worker sẽ tự đồng bộ danh
    sách nhóm ngay sau đó).
-5. Test gửi tin thật vào 1 nhóm Zalo + test SSO thật giữa 2 domain trên
+6. Test gửi tin thật vào 1 nhóm Zalo + test SSO thật giữa 2 domain trên
    trình duyệt (chưa test qua bao giờ, mới chỉ đúng logic + tsc sạch).

@@ -7,4 +7,5 @@ export interface User {
   is_super_admin?: boolean
   ke_toan?: boolean
   ke_toan_super_admin?: boolean
+  phong_ve?: boolean
 }

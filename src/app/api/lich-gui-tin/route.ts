@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { requireKeToan } from '@/lib/require-ke-toan'
+import { requirePhongVe } from '@/lib/require-phong-ve'
 
 export async function GET() {
-  const user = await requireKeToan()
+  const user = await requirePhongVe()
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const admin = createAdminClient()
@@ -18,7 +18,7 @@ export async function GET() {
 
 // POST — { title, message, zalo_group_id, zalo_group_name?, run_at, recurrence }
 export async function POST(req: NextRequest) {
-  const user = await requireKeToan()
+  const user = await requirePhongVe()
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const body = await req.json().catch(() => ({}))

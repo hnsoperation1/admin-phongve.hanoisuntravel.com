@@ -82,28 +82,52 @@ async function processDueJobs() {
   }
 }
 
+const GROUP_INFO_BATCH_SIZE = 50
+
 // Đồng bộ danh sách nhóm Zalo thật (tên + id) lên bảng zalo_groups để web
 // hiển thị checklist ở form "Thêm lịch gửi tin" — thay vì phải gõ tay
 // Thread ID. Chạy định kỳ (GROUP_SYNC_INTERVAL_MS) + gọi ngay sau khi login
 // thành công (xem tryLoadStoredSession/checkLoginRequest) để có dữ liệu
 // sớm nhất, không phải chờ tick đầu tiên.
+//
+// getGroupInfo() nhận nhiều ID cùng lúc nhưng gửi hết trong 1 request nếu
+// không chia lô — acc ở nhiều nhóm dễ khiến request bị Zalo từ chối (đã
+// gặp: getAllFriends chạy được nhưng getGroupInfo lỗi âm thầm, 0 nhóm được
+// lưu). Chia theo GROUP_INFO_BATCH_SIZE + log riêng từng bước để lỗi lô
+// nào không làm mất toàn bộ danh sách, và biết chính xác bước nào hỏng.
 async function syncGroups() {
   if (!api) return
 
-  const { gridVerMap } = await api.getAllGroups()
-  const groupIds = Object.keys(gridVerMap)
+  let groupIds
+  try {
+    const { gridVerMap } = await api.getAllGroups()
+    groupIds = Object.keys(gridVerMap)
+  } catch (err) {
+    console.error('[worker] Lỗi getAllGroups():', err instanceof Error ? err.message : err)
+    return
+  }
   if (groupIds.length === 0) return
 
-  const { gridInfoMap } = await api.getGroupInfo(groupIds)
-  const rows = Object.entries(gridInfoMap).map(([id, info]) => ({
-    zalo_group_id: id,
-    zalo_group_name: info.name ?? null,
-    synced_at: new Date().toISOString(),
-  }))
+  const rows = []
+  for (let i = 0; i < groupIds.length; i += GROUP_INFO_BATCH_SIZE) {
+    const batch = groupIds.slice(i, i + GROUP_INFO_BATCH_SIZE)
+    try {
+      const { gridInfoMap } = await api.getGroupInfo(batch)
+      for (const [id, info] of Object.entries(gridInfoMap)) {
+        rows.push({ zalo_group_id: id, zalo_group_name: info.name ?? null, synced_at: new Date().toISOString() })
+      }
+    } catch (err) {
+      console.error(`[worker] Lỗi getGroupInfo() cho lô ${i}-${i + batch.length} (${batch.length} ID):`, err instanceof Error ? err.message : err)
+    }
+  }
+  if (rows.length === 0) {
+    console.error(`[worker] Không lấy được thông tin nhóm nào (tổng ${groupIds.length} ID từ getAllGroups) — xem lỗi getGroupInfo() ở trên`)
+    return
+  }
 
   const { error } = await supabase.from('zalo_groups').upsert(rows, { onConflict: 'zalo_group_id' })
-  if (error) console.error('[worker] Lỗi đồng bộ danh sách nhóm:', error.message)
-  else console.log(`[worker] Đã đồng bộ ${rows.length} nhóm Zalo`)
+  if (error) console.error('[worker] Lỗi ghi zalo_groups:', error.message)
+  else console.log(`[worker] Đã đồng bộ ${rows.length}/${groupIds.length} nhóm Zalo`)
 }
 
 // Đồng bộ danh bạ bạn bè Zalo (cá nhân, khác nhóm) lên bảng zalo_contacts —

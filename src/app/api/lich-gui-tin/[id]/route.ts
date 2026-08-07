@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { requireKeToan } from '@/lib/require-ke-toan'
+import { requirePhongVe } from '@/lib/require-phong-ve'
 
 // PATCH — sửa job hoặc huỷ (status: 'cancelled'), cũng dùng để reset job
 // 'error' về lại 'pending' sau khi admin đã sửa nguyên nhân lỗi.
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await requireKeToan()
+  const user = await requirePhongVe()
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const { id } = await params
@@ -29,7 +29,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 }
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const user = await requireKeToan()
+  const user = await requirePhongVe()
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const { id } = await params

@@ -2,14 +2,17 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, CalendarClock, QrCode, LogOut, BookUser } from 'lucide-react'
+import { LayoutDashboard, CalendarClock, QrCode, LogOut } from 'lucide-react'
 import { useAuth } from '@/contexts/auth'
 import { getInitials } from '@/lib/utils'
 
+// "/danh-muc-zalo" CỐ Ý không có trong Sidebar (kể cả cho super_admin) —
+// chỉ vào được bằng cách gõ thẳng URL. Trang + API nó gọi vẫn tự chặn
+// bằng requireSuperAdmin() (xem src/lib/require-phong-ve.ts), việc ẩn
+// link ở đây chỉ là không quảng bá trang, không phải lớp bảo mật.
 const NAV = [
   { href: '/', icon: LayoutDashboard, label: 'Tổng quan' },
   { href: '/lich-gui-tin', icon: CalendarClock, label: 'Lịch gửi tin Zalo' },
-  { href: '/danh-muc-zalo', icon: BookUser, label: 'Danh mục Zalo' },
   { href: '/zalo-session', icon: QrCode, label: 'Đăng nhập lại Zalo' },
 ]
 
@@ -53,7 +56,7 @@ export default function Sidebar() {
             </div>
             <div className="min-w-0">
               <div className="text-sm font-semibold text-white truncate">{user.full_name}</div>
-              <div className="text-[11px] text-brand-400">{user.ke_toan_super_admin ? 'Kế toán (admin)' : user.ke_toan ? 'Kế toán' : 'Giám đốc'}</div>
+              <div className="text-[11px] text-brand-400">{user.is_super_admin ? 'Super Admin' : 'Phòng vé'}</div>
             </div>
           </div>
           <button onClick={logout}
