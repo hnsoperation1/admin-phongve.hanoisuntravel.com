@@ -265,7 +265,7 @@ export default function LichGuiTinPage() {
         <div className="fixed inset-y-0 left-52 right-0 z-50 flex justify-end bg-black/30" onClick={() => setFormOpen(false)}>
           <div className="bg-white shadow-xl w-full h-full p-5 overflow-y-auto" onClick={e => e.stopPropagation()}>
             <h2 className="font-bold text-gray-900 mb-3">{editingJob ? 'Sửa lịch gửi tin' : 'Thêm lịch gửi tin'}</h2>
-            <div className="grid grid-cols-4 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <div className="space-y-3">
                 <div>
                   <label className="block text-xs font-semibold text-gray-500 mb-1">{recurrence === 'once' ? 'Ngày chạy *' : 'Ngày bắt đầu *'}</label>
@@ -306,7 +306,7 @@ export default function LichGuiTinPage() {
                 )}
               </div>
 
-              <div className="col-span-2 space-y-3">
+              <div className="space-y-3">
                 <div>
                   <label className="block text-xs font-semibold text-gray-500 mb-1">Tiêu đề *</label>
                   <input value={title} onChange={e => setTitle(e.target.value)} className={INPUT} placeholder="Nhắc lịch bay sáng" />
