@@ -77,9 +77,6 @@ export default function ZaloSessionPage() {
     <div className="p-5 space-y-4 max-w-lg">
       <div>
         <h1 className="text-lg font-bold text-gray-900">Đăng nhập lại Zalo</h1>
-        <p className="text-sm text-gray-400 mt-0.5">
-          Worker gửi tin (Railway) dùng session này để gửi tin vào nhóm Zalo. Quét QR ở đây khi session hết hạn.
-        </p>
       </div>
 
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 flex flex-col items-center text-center gap-4">
@@ -119,10 +116,6 @@ export default function ZaloSessionPage() {
           {requesting ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
           Đăng nhập lại Zalo
         </button>
-
-        <p className="text-[11px] text-gray-300">
-          Cần worker (Railway) đang chạy thì mới có người xử lý yêu cầu này — xem <code>worker/README.md</code>.
-        </p>
       </div>
     </div>
   )

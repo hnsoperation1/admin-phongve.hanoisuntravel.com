@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
-import { RefreshCw, Plus, Loader2 } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { RefreshCw, Plus, Loader2, X } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
 
 type ScheduledMessage = {
@@ -18,7 +18,7 @@ type ScheduledMessage = {
 }
 
 const RECURRENCE_LABELS: Record<string, string> = {
-  once: 'Chỉ 1 lần', daily: 'Hàng ngày', weekly: 'Hàng tuần', monthly: 'Hàng tháng',
+  daily: 'Hàng ngày', weekly: 'Hàng tuần', monthly: 'Hàng tháng', once: 'Chỉ 1 lần',
 }
 
 const STATUS_STYLE: Record<string, string> = {
@@ -34,13 +34,16 @@ const STATUS_LABELS: Record<string, string> = {
 
 const INPUT = 'w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-400 bg-white placeholder:text-gray-300'
 
-// datetime-local input dùng giờ local, không có timezone — new Date(str) ở
-// trình duyệt tự hiểu theo local time, .toISOString() ra đúng UTC để lưu DB.
-function localInputToIso(v: string): string | null {
-  if (!v) return null
-  const d = new Date(v)
+// Ngày + giờ (input date/time riêng, không phải datetime-local) dùng giờ
+// local — new Date(str) ở trình duyệt tự hiểu theo local time,
+// .toISOString() ra đúng UTC để lưu DB.
+function dateTimeToIso(dateStr: string, timeStr: string): string | null {
+  if (!dateStr || !timeStr) return null
+  const d = new Date(`${dateStr}T${timeStr}`)
   return isNaN(d.getTime()) ? null : d.toISOString()
 }
+
+type GroupRef = { id: string; name: string | null }
 
 export default function LichGuiTinPage() {
   const [jobs, setJobs] = useState<ScheduledMessage[]>([])
@@ -51,10 +54,22 @@ export default function LichGuiTinPage() {
 
   const [title, setTitle] = useState('')
   const [message, setMessage] = useState('')
-  const [groupId, setGroupId] = useState('')
-  const [groupName, setGroupName] = useState('')
-  const [runAt, setRunAt] = useState('')
-  const [recurrence, setRecurrence] = useState('once')
+  const [date, setDate] = useState('')
+  const [times, setTimes] = useState<string[]>([''])
+  const [recurrence, setRecurrence] = useState('daily')
+  const [selectedGroups, setSelectedGroups] = useState<GroupRef[]>([])
+  const [showAddGroup, setShowAddGroup] = useState(false)
+  const [newGroupId, setNewGroupId] = useState('')
+  const [newGroupName, setNewGroupName] = useState('')
+
+  // Danh sách nhóm để chọn — suy ra từ các lịch đã tạo trước đó (chưa có
+  // API "danh bạ nhóm Zalo" riêng), nhóm mới gõ tay ở form "Thêm nhóm mới"
+  // sẽ tự xuất hiện ở đây từ lần mở form sau.
+  const knownGroups = useMemo(() => {
+    const map = new Map<string, string | null>()
+    for (const j of jobs) if (!map.has(j.zalo_group_id)) map.set(j.zalo_group_id, j.zalo_group_name)
+    return Array.from(map, ([id, name]) => ({ id, name }))
+  }, [jobs])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -79,34 +94,69 @@ export default function LichGuiTinPage() {
   function openAdd() {
     setTitle('')
     setMessage('')
-    setGroupId('')
-    setGroupName('')
-    setRunAt('')
-    setRecurrence('once')
+    setDate('')
+    setTimes([''])
+    setRecurrence('daily')
+    setSelectedGroups([])
+    setShowAddGroup(false)
+    setNewGroupId('')
+    setNewGroupName('')
     setFormOpen(true)
   }
 
+  function addTime() {
+    setTimes(prev => [...prev, ''])
+  }
+
+  function removeTime(i: number) {
+    setTimes(prev => prev.filter((_, idx) => idx !== i))
+  }
+
+  function setTimeAt(i: number, v: string) {
+    setTimes(prev => prev.map((t, idx) => (idx === i ? v : t)))
+  }
+
+  function toggleGroup(g: GroupRef) {
+    setSelectedGroups(prev => (prev.some(x => x.id === g.id) ? prev.filter(x => x.id !== g.id) : [...prev, g]))
+  }
+
+  function addNewGroup() {
+    const id = newGroupId.trim()
+    if (!id) return
+    setSelectedGroups(prev => (prev.some(x => x.id === id) ? prev : [...prev, { id, name: newGroupName.trim() || null }]))
+    setNewGroupId('')
+    setNewGroupName('')
+    setShowAddGroup(false)
+  }
+
+  // Mỗi (giờ chạy × nhóm đã chọn) là 1 job riêng — worker chỉ hiểu 1
+  // run_at/1 nhóm mỗi dòng, nên "nhiều giờ trong ngày" + "nhiều nhóm" được
+  // hiện thực bằng cách tạo nhiều dòng cùng lúc từ 1 lần lưu form.
   async function save() {
-    const iso = localInputToIso(runAt)
-    if (!title.trim() || !message.trim() || !groupId.trim() || !iso) return
+    const validTimes = times.map(t => t.trim()).filter(Boolean)
+    if (!title.trim() || !message.trim() || !date || validTimes.length === 0 || selectedGroups.length === 0) return
     setSaving(true)
     try {
-      const res = await fetch('/api/lich-gui-tin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: title.trim(),
-          message,
-          zalo_group_id: groupId.trim(),
-          zalo_group_name: groupName.trim() || null,
-          run_at: iso,
-          recurrence,
-        }),
-      })
-      if (res.ok) {
-        setFormOpen(false)
-        loadData()
+      for (const t of validTimes) {
+        const iso = dateTimeToIso(date, t)
+        if (!iso) continue
+        for (const g of selectedGroups) {
+          await fetch('/api/lich-gui-tin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title: title.trim(),
+              message,
+              zalo_group_id: g.id,
+              zalo_group_name: g.name,
+              run_at: iso,
+              recurrence,
+            }),
+          })
+        }
       }
+      setFormOpen(false)
+      loadData()
     } finally {
       setSaving(false)
     }
@@ -146,29 +196,31 @@ export default function LichGuiTinPage() {
 
       {formOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={() => setFormOpen(false)}>
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl p-5" onClick={e => e.stopPropagation()}>
             <h2 className="font-bold text-gray-900 mb-3">Thêm lịch gửi tin</h2>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1">Tiêu đề *</label>
-                <input value={title} onChange={e => setTitle(e.target.value)} className={INPUT} placeholder="Nhắc lịch bay sáng" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1">Nội dung tin nhắn *</label>
-                <textarea value={message} onChange={e => setMessage(e.target.value)} rows={4} className={INPUT} />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1">Thread ID nhóm Zalo *</label>
-                <input value={groupId} onChange={e => setGroupId(e.target.value)} className={INPUT} placeholder="vd: 1234567890" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1">Tên nhóm (chỉ để hiển thị)</label>
-                <input value={groupName} onChange={e => setGroupName(e.target.value)} className={INPUT} />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-3">
                 <div>
-                  <label className="block text-xs font-semibold text-gray-500 mb-1">Thời điểm chạy *</label>
-                  <input type="datetime-local" value={runAt} onChange={e => setRunAt(e.target.value)} className={INPUT} />
+                  <label className="block text-xs font-semibold text-gray-500 mb-1">Ngày chạy *</label>
+                  <input type="date" value={date} onChange={e => setDate(e.target.value)} className={INPUT} />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1">Giờ chạy *</label>
+                  <div className="space-y-2">
+                    {times.map((t, i) => (
+                      <div key={i} className="flex items-center gap-1.5">
+                        <input type="time" value={t} onChange={e => setTimeAt(i, e.target.value)} className={INPUT} />
+                        {times.length > 1 && (
+                          <button type="button" onClick={() => removeTime(i)} className="p-2 text-gray-300 hover:text-red-500 transition-colors">
+                            <X size={14} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" onClick={addTime} className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700">
+                    <Plus size={13} /> Thêm giờ chạy
+                  </button>
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-500 mb-1">Lặp lại</label>
@@ -177,10 +229,62 @@ export default function LichGuiTinPage() {
                   </select>
                 </div>
               </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1">Tiêu đề *</label>
+                  <input value={title} onChange={e => setTitle(e.target.value)} className={INPUT} placeholder="Nhắc lịch bay sáng" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1">Nội dung tin nhắn *</label>
+                  <textarea value={message} onChange={e => setMessage(e.target.value)} rows={8} className={INPUT} />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold text-gray-500 mb-1">Gửi vào nhóm *</label>
+                <div className="border border-gray-200 rounded-xl max-h-40 overflow-y-auto divide-y divide-gray-100">
+                  {knownGroups.length === 0 ? (
+                    <p className="text-xs text-gray-300 px-3 py-3">Chưa có nhóm nào — thêm nhóm mới bên dưới.</p>
+                  ) : knownGroups.map(g => (
+                    <label key={g.id} className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 cursor-pointer hover:bg-gray-50">
+                      <input type="checkbox" checked={selectedGroups.some(x => x.id === g.id)} onChange={() => toggleGroup(g)} />
+                      <span className="truncate">{g.name ?? g.id}</span>
+                    </label>
+                  ))}
+                </div>
+
+                {showAddGroup ? (
+                  <div className="space-y-2 border border-gray-200 rounded-xl p-3">
+                    <input value={newGroupId} onChange={e => setNewGroupId(e.target.value)} className={INPUT} placeholder="Thread ID nhóm (vd: 1234567890)" />
+                    <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)} className={INPUT} placeholder="Tên nhóm (chỉ để hiển thị)" />
+                    <div className="flex items-center gap-2">
+                      <button type="button" onClick={addNewGroup} className="flex-1 py-2 rounded-lg text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700 transition-colors">Thêm</button>
+                      <button type="button" onClick={() => { setShowAddGroup(false); setNewGroupId(''); setNewGroupName('') }} className="flex-1 py-2 rounded-lg text-xs font-semibold text-gray-500 hover:bg-gray-100 transition-colors">Huỷ</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => setShowAddGroup(true)} className="flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700">
+                    <Plus size={13} /> Thêm nhóm mới
+                  </button>
+                )}
+
+                {selectedGroups.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedGroups.map(g => (
+                      <span key={g.id} className="flex items-center gap-1 text-[11px] bg-brand-50 text-brand-700 px-2 py-1 rounded-full">
+                        {g.name ?? g.id}
+                        <button type="button" onClick={() => toggleGroup(g)}><X size={11} /></button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-2 mt-4">
               <button onClick={() => setFormOpen(false)} className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-gray-500 hover:bg-gray-100 transition-colors">Huỷ</button>
-              <button onClick={save} disabled={saving || !title.trim() || !message.trim() || !groupId.trim() || !runAt}
+              <button onClick={save}
+                disabled={saving || !title.trim() || !message.trim() || !date || times.every(t => !t.trim()) || selectedGroups.length === 0}
                 className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-sm font-semibold text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-50 transition-colors">
                 {saving && <Loader2 size={14} className="animate-spin" />} Lưu
               </button>
