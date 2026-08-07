@@ -189,8 +189,8 @@ export default function LichGuiTinPage() {
       </div>
 
       {formOpen && (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/30" onClick={() => setFormOpen(false)}>
-          <div className="bg-white shadow-xl w-full max-w-3xl h-full p-5 overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-y-0 left-52 right-0 z-50 flex justify-end bg-black/30" onClick={() => setFormOpen(false)}>
+          <div className="bg-white shadow-xl w-full h-full p-5 overflow-y-auto" onClick={e => e.stopPropagation()}>
             <h2 className="font-bold text-gray-900 mb-3">Thêm lịch gửi tin</h2>
             <div className="grid grid-cols-4 gap-4">
               <div className="space-y-3">
