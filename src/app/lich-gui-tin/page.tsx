@@ -61,15 +61,31 @@ export default function LichGuiTinPage() {
   const [showAddGroup, setShowAddGroup] = useState(false)
   const [newGroupId, setNewGroupId] = useState('')
   const [newGroupName, setNewGroupName] = useState('')
+  const [syncedGroups, setSyncedGroups] = useState<GroupRef[]>([])
 
-  // Danh sách nhóm để chọn — suy ra từ các lịch đã tạo trước đó (chưa có
-  // API "danh bạ nhóm Zalo" riêng), nhóm mới gõ tay ở form "Thêm nhóm mới"
-  // sẽ tự xuất hiện ở đây từ lần mở form sau.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetch('/api/zalo-groups')
+      .then(res => res.json())
+      .then(({ data }) => {
+        if (Array.isArray(data)) {
+          setSyncedGroups(data.map((g: { zalo_group_id: string; zalo_group_name: string | null }) => ({ id: g.zalo_group_id, name: g.zalo_group_name })))
+        }
+      })
+      .catch(() => { /* im lặng — chỉ ảnh hưởng gợi ý, worker chưa đồng bộ lần nào cũng không sao (còn nút "Thêm nhóm mới") */ })
+  }, [])
+
+  // Danh sách nhóm để chọn — hợp giữa danh sách THẬT do worker đồng bộ từ
+  // Zalo (syncedGroups) và các nhóm đã dùng trong lịch cũ (phòng khi nhóm
+  // đó chưa/không còn nằm trong lần đồng bộ gần nhất, vd worker mới bật
+  // lại chưa kịp sync). Nhóm gõ tay ở "Thêm nhóm mới" sẽ tự xuất hiện ở
+  // đây từ lần đồng bộ kế tiếp của worker.
   const knownGroups = useMemo(() => {
     const map = new Map<string, string | null>()
+    for (const g of syncedGroups) map.set(g.id, g.name)
     for (const j of jobs) if (!map.has(j.zalo_group_id)) map.set(j.zalo_group_id, j.zalo_group_name)
     return Array.from(map, ([id, name]) => ({ id, name }))
-  }, [jobs])
+  }, [syncedGroups, jobs])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -195,10 +211,10 @@ export default function LichGuiTinPage() {
       </div>
 
       {formOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={() => setFormOpen(false)}>
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl p-5" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex justify-end bg-black/30" onClick={() => setFormOpen(false)}>
+          <div className="bg-white shadow-xl w-full max-w-3xl h-full p-5 overflow-y-auto" onClick={e => e.stopPropagation()}>
             <h2 className="font-bold text-gray-900 mb-3">Thêm lịch gửi tin</h2>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-4 gap-4">
               <div className="space-y-3">
                 <div>
                   <label className="block text-xs font-semibold text-gray-500 mb-1">Ngày chạy *</label>
@@ -230,14 +246,14 @@ export default function LichGuiTinPage() {
                 </div>
               </div>
 
-              <div className="space-y-3">
+              <div className="col-span-2 space-y-3">
                 <div>
                   <label className="block text-xs font-semibold text-gray-500 mb-1">Tiêu đề *</label>
                   <input value={title} onChange={e => setTitle(e.target.value)} className={INPUT} placeholder="Nhắc lịch bay sáng" />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-500 mb-1">Nội dung tin nhắn *</label>
-                  <textarea value={message} onChange={e => setMessage(e.target.value)} rows={8} className={INPUT} />
+                  <textarea value={message} onChange={e => setMessage(e.target.value)} rows={10} className={INPUT} />
                 </div>
               </div>
 

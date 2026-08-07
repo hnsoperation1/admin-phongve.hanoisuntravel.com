@@ -116,16 +116,31 @@ Railway giờ chỉ cần đúng 2 env cố định (`NEXT_PUBLIC_SUPABASE_URL`,
 `SUPABASE_SERVICE_ROLE_KEY`) — set 1 lần lúc setup, không bao giờ phải
 sửa lại vì lý do session Zalo nữa.
 
+## Cập nhật (2026-08-07): đồng bộ danh sách nhóm Zalo thật vào form "Thêm lịch gửi tin"
+
+Trước đó form "Thêm lịch gửi tin" phải gõ tay Thread ID nhóm. Giờ
+`worker/index.js` có thêm `syncGroups()` — gọi `api.getAllGroups()` +
+`api.getGroupInfo()` của zca-js (đã xác nhận API tồn tại, trả về `name`
+thật của nhóm), upsert vào bảng mới `zalo_groups` (Supabase, xem
+`migration_zalo_groups.sql`). Chạy định kỳ mỗi 5 phút
+(`GROUP_SYNC_INTERVAL_MS`) + chạy ngay sau mỗi lần login/đăng nhập lại
+thành công. Web đọc qua `GET /api/zalo-groups` (route mới, cùng
+`requireKeToan()` như các route khác), form giờ hiện checklist nhóm thật
+thay vì phải gõ tay — vẫn giữ nút "Thêm nhóm mới" làm phương án dự phòng
+(nhóm vừa tạo, chưa kịp tới lượt đồng bộ tiếp theo).
+
 ## Việc còn lại (chưa làm)
 
-1. Chạy 2 migration trên Supabase SQL Editor:
-   `migration_zalo_scheduled_messages.sql` và `migration_zalo_session.sql`.
+1. Chạy 3 migration trên Supabase SQL Editor:
+   `migration_zalo_scheduled_messages.sql`, `migration_zalo_session.sql`,
+   `migration_zalo_groups.sql`.
 2. Deploy `worker/` lên Railway (Root Directory = `worker`), set 2 env
    Supabase — xem `worker/README.md`.
 3. Deploy app Next.js chính lên Vercel (chưa deploy lần đầu) — không đổi
    gì so với kế hoạch cũ, DNS `admin-phongve.hanoisuntravel.com` vẫn trỏ
    Vercel như bình thường (SSO không phụ thuộc worker).
 4. Vào trang "Đăng nhập lại Zalo" trên web, bấm nút, quét QR bằng acc Zalo
-   phụ — lấy session Zalo thật lần đầu tiên.
+   phụ — lấy session Zalo thật lần đầu tiên (worker sẽ tự đồng bộ danh
+   sách nhóm ngay sau đó).
 5. Test gửi tin thật vào 1 nhóm Zalo + test SSO thật giữa 2 domain trên
    trình duyệt (chưa test qua bao giờ, mới chỉ đúng logic + tsc sạch).
