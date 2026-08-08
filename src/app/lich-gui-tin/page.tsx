@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { RefreshCw, Plus, Loader2, X, Search, Pencil } from 'lucide-react'
+import { RefreshCw, Plus, Loader2, X, Search, Eye } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
 import { useAuth } from '@/contexts/auth'
 
@@ -47,11 +47,6 @@ function dateTimeToIso(dateStr: string, timeStr: string): string | null {
   return isNaN(d.getTime()) ? null : d.toISOString()
 }
 
-function toDateInputValue(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-
 // recurrence_until là cột DATE thuần "yyyy-mm-dd" (không có giờ/timezone)
 // — đổi trực tiếp qua string, KHÔNG dựng Date rồi format lại (dễ lệch
 // ngày do parse UTC midnight rồi quy đổi giờ local).
@@ -69,7 +64,7 @@ export default function LichGuiTinPage() {
   const [loadError, setLoadError] = useState(false)
   const [formOpen, setFormOpen] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [editingJob, setEditingJob] = useState<ScheduledMessage | null>(null)
+  const [viewJob, setViewJob] = useState<ScheduledMessage | null>(null)
   const [creatorFilter, setCreatorFilter] = useState('mine')
 
   const [title, setTitle] = useState('')
@@ -128,7 +123,6 @@ export default function LichGuiTinPage() {
   }, [loadData])
 
   function openAdd() {
-    setEditingJob(null)
     setTitle('')
     setMessage('')
     setDate('')
@@ -140,24 +134,6 @@ export default function LichGuiTinPage() {
     setRecurrence('daily')
     setRecurrenceUntil('')
     setSelectedGroups([])
-    setGroupSearch('')
-    setFormOpen(true)
-  }
-
-  // Sửa 1 dòng đã có — khác lúc tạo mới (có thể tạo hàng loạt theo
-  // giờ×nhóm), sửa chỉ áp dụng cho ĐÚNG 1 dòng đang bấm, nên khoá về 1
-  // giờ/1 nhóm (xem toggleGroup, save() bên dưới).
-  function openEdit(job: ScheduledMessage) {
-    setEditingJob(job)
-    setTitle(job.title)
-    setMessage(job.message)
-    const d = new Date(job.run_at)
-    const pad = (n: number) => String(n).padStart(2, '0')
-    setDate(toDateInputValue(d))
-    setTimes([`${pad(d.getHours())}:${pad(d.getMinutes())}`])
-    setRecurrence(job.recurrence)
-    setRecurrenceUntil(job.recurrence_until ?? '')
-    setSelectedGroups([{ id: job.zalo_group_id, name: job.zalo_group_name }])
     setGroupSearch('')
     setFormOpen(true)
   }
@@ -205,64 +181,42 @@ export default function LichGuiTinPage() {
   }
 
   function toggleGroup(g: GroupRef) {
-    // Đang sửa 1 dòng có sẵn → chỉ 1 nhóm/dòng, chọn nhóm khác thay thế
-    // luôn (giống radio) thay vì cộng dồn như lúc tạo mới.
-    if (editingJob) {
-      setSelectedGroups([g])
-      return
-    }
     setSelectedGroups(prev => (prev.some(x => x.id === g.id) ? prev.filter(x => x.id !== g.id) : [...prev, g]))
   }
 
-  // Tạo mới: mỗi (giờ chạy × nhóm đã chọn) là 1 job riêng — worker chỉ
-  // hiểu 1 run_at/1 nhóm mỗi dòng, nên "nhiều giờ trong ngày" + "nhiều
-  // nhóm" được hiện thực bằng cách tạo nhiều dòng cùng lúc từ 1 lần lưu
-  // form. "Lặp lại đến ngày" (recurrenceUntil) là 1 cột trên CHÍNH job đó
-  // — worker tự dừng lặp khi vượt ngày này (xem computeNextRun() ở
+  // Mỗi (giờ chạy × nhóm đã chọn) là 1 job riêng — worker chỉ hiểu 1
+  // run_at/1 nhóm mỗi dòng, nên "nhiều giờ trong ngày" + "nhiều nhóm" được
+  // hiện thực bằng cách tạo nhiều dòng cùng lúc từ 1 lần lưu form.
+  // "Lặp lại đến ngày" (recurrenceUntil) là 1 cột trên CHÍNH job đó —
+  // worker tự dừng lặp khi vượt ngày này (xem computeNextRun() ở
   // worker/index.js), KHÔNG phải tạo nhiều dòng theo từng ngày.
-  // Sửa: chỉ PATCH đúng 1 dòng đang mở, không fan-out.
+  //
+  // KHÔNG có sửa lịch đã tạo (chỉ xem/huỷ/xoá) — cố ý, vì "sửa" 1 job đã
+  // fan-out từ nhiều giờ×nhóm không rõ nghĩa (sửa đúng 1 dòng hay cả lô?).
+  // Muốn đổi nội dung/giờ/nhóm thì tạo lịch mới, xoá lịch cũ.
   async function save() {
     const validTimes = times.map(t => t.trim()).filter(Boolean)
     if (!title.trim() || !message.trim() || !date || validTimes.length === 0 || selectedGroups.length === 0) return
     setSaving(true)
     try {
       const recurrence_until = recurrence !== 'once' && recurrenceUntil ? recurrenceUntil : null
-      if (editingJob) {
-        const iso = dateTimeToIso(date, validTimes[0])
-        if (!iso) return
-        const g = selectedGroups[0]
-        await fetch(`/api/lich-gui-tin/${editingJob.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: title.trim(),
-            message,
-            zalo_group_id: g.id,
-            zalo_group_name: g.name,
-            run_at: iso,
-            recurrence,
-            recurrence_until,
-          }),
-        })
-      } else {
-        for (const t of validTimes) {
-          const iso = dateTimeToIso(date, t)
-          if (!iso) continue
-          for (const g of selectedGroups) {
-            await fetch('/api/lich-gui-tin', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                title: title.trim(),
-                message,
-                zalo_group_id: g.id,
-                zalo_group_name: g.name,
-                run_at: iso,
-                recurrence,
-                recurrence_until,
-              }),
-            })
-          }
+      for (const t of validTimes) {
+        const iso = dateTimeToIso(date, t)
+        if (!iso) continue
+        for (const g of selectedGroups) {
+          await fetch('/api/lich-gui-tin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title: title.trim(),
+              message,
+              zalo_group_id: g.id,
+              zalo_group_name: g.name,
+              run_at: iso,
+              recurrence,
+              recurrence_until,
+            }),
+          })
         }
       }
       setFormOpen(false)
@@ -332,7 +286,7 @@ export default function LichGuiTinPage() {
       {formOpen && (
         <div className="fixed inset-y-0 left-52 right-0 z-50 flex justify-end bg-black/30" onClick={() => setFormOpen(false)}>
           <div className="bg-white shadow-xl w-full h-full p-5 overflow-y-auto" onClick={e => e.stopPropagation()}>
-            <h2 className="font-bold text-gray-900 mb-3">{editingJob ? 'Sửa lịch gửi tin' : 'Thêm lịch gửi tin'}</h2>
+            <h2 className="font-bold text-gray-900 mb-3">Thêm lịch gửi tin</h2>
             <div className="grid grid-cols-3 gap-4">
               <div className="space-y-3">
                 <div>
@@ -345,7 +299,7 @@ export default function LichGuiTinPage() {
                     {times.map((t, i) => (
                       <div key={i} className="flex items-center gap-1.5">
                         <input type="time" value={t} onChange={e => setTimeAt(i, e.target.value)} className={INPUT} />
-                        {!editingJob && times.length > 1 && (
+                        {times.length > 1 && (
                           <button type="button" onClick={() => removeTime(i)} className="p-2 text-gray-300 hover:text-red-500 transition-colors">
                             <X size={14} />
                           </button>
@@ -353,35 +307,31 @@ export default function LichGuiTinPage() {
                       </div>
                     ))}
                   </div>
-                  {!editingJob && (
-                    <button type="button" onClick={addTime} className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700">
-                      <Plus size={13} /> Thêm giờ chạy
-                    </button>
-                  )}
-                  {!editingJob && (
-                    <div className="mt-2 p-2.5 bg-gray-50 rounded-xl space-y-1.5">
-                      <p className="text-[11px] font-semibold text-gray-400">Hoặc tạo hàng loạt theo khung giờ</p>
-                      <div className="flex items-center gap-1.5">
-                        <input type="time" value={rangeFrom} onChange={e => setRangeFrom(e.target.value)}
-                          className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-brand-400" />
-                        <span className="text-[11px] text-gray-400 shrink-0">đến</span>
-                        <input type="time" value={rangeTo} onChange={e => setRangeTo(e.target.value)}
-                          className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-brand-400" />
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[11px] text-gray-400 shrink-0">Mỗi</span>
-                        <input type="number" min={5} step={5} value={rangeInterval}
-                          onChange={e => setRangeInterval(Number(e.target.value))}
-                          className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-brand-400" />
-                        <span className="text-[11px] text-gray-400 shrink-0">phút</span>
-                        <button type="button" onClick={generateTimesFromRange} disabled={!rangeFrom || !rangeTo}
-                          className="ml-auto text-xs font-semibold text-brand-600 hover:text-brand-700 disabled:opacity-40 disabled:cursor-not-allowed">
-                          Tạo giờ
-                        </button>
-                      </div>
-                      {rangeWarning && <p className="text-[11px] text-red-500">{rangeWarning}</p>}
+                  <button type="button" onClick={addTime} className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700">
+                    <Plus size={13} /> Thêm giờ chạy
+                  </button>
+                  <div className="mt-2 p-2.5 bg-gray-50 rounded-xl space-y-1.5">
+                    <p className="text-[11px] font-semibold text-gray-400">Hoặc tạo hàng loạt theo khung giờ</p>
+                    <div className="flex items-center gap-1.5">
+                      <input type="time" value={rangeFrom} onChange={e => setRangeFrom(e.target.value)}
+                        className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-brand-400" />
+                      <span className="text-[11px] text-gray-400 shrink-0">đến</span>
+                      <input type="time" value={rangeTo} onChange={e => setRangeTo(e.target.value)}
+                        className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-brand-400" />
                     </div>
-                  )}
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] text-gray-400 shrink-0">Mỗi</span>
+                      <input type="number" min={5} step={5} value={rangeInterval}
+                        onChange={e => setRangeInterval(Number(e.target.value))}
+                        className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-brand-400" />
+                      <span className="text-[11px] text-gray-400 shrink-0">phút</span>
+                      <button type="button" onClick={generateTimesFromRange} disabled={!rangeFrom || !rangeTo}
+                        className="ml-auto text-xs font-semibold text-brand-600 hover:text-brand-700 disabled:opacity-40 disabled:cursor-not-allowed">
+                        Tạo giờ
+                      </button>
+                    </div>
+                    {rangeWarning && <p className="text-[11px] text-red-500">{rangeWarning}</p>}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-500 mb-1">Lặp lại</label>
@@ -457,6 +407,58 @@ export default function LichGuiTinPage() {
         </div>
       )}
 
+      {viewJob && (
+        <div className="fixed inset-y-0 left-52 right-0 z-50 flex justify-end bg-black/30" onClick={() => setViewJob(null)}>
+          <div className="bg-white shadow-xl w-full max-w-md h-full p-5 overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <h2 className="font-bold text-gray-900 mb-3">Chi tiết lịch gửi tin</h2>
+            <div className="space-y-3">
+              <div>
+                <div className="text-xs font-semibold text-gray-400 mb-1">Tiêu đề</div>
+                <div className="text-sm text-gray-800 font-semibold">{viewJob.title}</div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-gray-400 mb-1">Nội dung tin nhắn</div>
+                <div className="text-sm text-gray-700 whitespace-pre-wrap border border-gray-100 rounded-xl p-3 bg-gray-50">{viewJob.message}</div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-gray-400 mb-1">Gửi vào nhóm</div>
+                <div className="text-sm text-gray-700">{viewJob.zalo_group_name ?? viewJob.zalo_group_id}</div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-gray-400 mb-1">Chạy lúc</div>
+                <div className="text-sm text-gray-700">{formatDateTime(viewJob.run_at)}</div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-gray-400 mb-1">Lặp lại</div>
+                <div className="text-sm text-gray-700">
+                  {RECURRENCE_LABELS[viewJob.recurrence] ?? viewJob.recurrence}
+                  {viewJob.recurrence_until && <span className="text-gray-400"> — đến {formatDateOnly(viewJob.recurrence_until)}</span>}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-gray-400 mb-1">Trạng thái</div>
+                <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${STATUS_STYLE[viewJob.status] ?? ''}`}>
+                  {STATUS_LABELS[viewJob.status] ?? viewJob.status}
+                </span>
+                {viewJob.status === 'error' && viewJob.last_error && (
+                  <div className="text-xs text-red-500 mt-1.5">{viewJob.last_error}</div>
+                )}
+              </div>
+              {viewJob.creator && (
+                <div>
+                  <div className="text-xs font-semibold text-gray-400 mb-1">Người tạo</div>
+                  <div className="text-sm text-gray-700">{viewJob.creator.full_name}</div>
+                </div>
+              )}
+            </div>
+            <button onClick={() => setViewJob(null)}
+              className="w-full mt-5 py-2.5 rounded-xl text-sm font-semibold text-gray-500 hover:bg-gray-100 transition-colors">
+              Đóng
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -481,10 +483,10 @@ export default function LichGuiTinPage() {
                 </td></tr>
               ) : filteredJobs.map(j => (
                 <tr key={j.id} className="hover:bg-gray-50/70 transition-colors align-top group">
-                  <td className="px-4 py-2.5 cursor-pointer" onClick={() => openEdit(j)}>
+                  <td className="px-4 py-2.5 cursor-pointer" onClick={() => setViewJob(j)}>
                     <div className="flex items-center gap-1.5">
                       <div className="font-semibold text-gray-800 group-hover:text-brand-700">{j.title}</div>
-                      <Pencil size={11} className="text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                      <Eye size={11} className="text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
                     </div>
                     <div className="text-xs text-gray-400 truncate max-w-xs">{j.message}</div>
                     {creatorFilter === 'all' && j.creator && (
