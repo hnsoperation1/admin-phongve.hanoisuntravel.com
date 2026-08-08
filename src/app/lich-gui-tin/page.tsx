@@ -76,6 +76,10 @@ export default function LichGuiTinPage() {
   const [message, setMessage] = useState('')
   const [date, setDate] = useState('')
   const [times, setTimes] = useState<string[]>([''])
+  const [rangeFrom, setRangeFrom] = useState('')
+  const [rangeTo, setRangeTo] = useState('')
+  const [rangeInterval, setRangeInterval] = useState(30)
+  const [rangeWarning, setRangeWarning] = useState('')
   const [recurrence, setRecurrence] = useState('daily')
   const [recurrenceUntil, setRecurrenceUntil] = useState('')
   const [selectedGroups, setSelectedGroups] = useState<GroupRef[]>([])
@@ -129,6 +133,10 @@ export default function LichGuiTinPage() {
     setMessage('')
     setDate('')
     setTimes([''])
+    setRangeFrom('')
+    setRangeTo('')
+    setRangeInterval(30)
+    setRangeWarning('')
     setRecurrence('daily')
     setRecurrenceUntil('')
     setSelectedGroups([])
@@ -164,6 +172,36 @@ export default function LichGuiTinPage() {
 
   function setTimeAt(i: number, v: string) {
     setTimes(prev => prev.map((t, idx) => (idx === i ? v : t)))
+  }
+
+  // Cách thứ 2 để điền "Giờ chạy" (bên cạnh thêm tay từng giờ): chọn 1
+  // khung giờ + tần suất, tự sinh ra các giờ cách đều nhau rồi CỘNG DỒN
+  // vào danh sách hiện có (không xoá giờ đã thêm tay trước đó) — mỗi giờ
+  // trong danh sách vẫn fan-out thành 1 job riêng lúc lưu như trước giờ.
+  const MAX_RANGE_SLOTS = 60
+  function generateTimesFromRange() {
+    setRangeWarning('')
+    if (!rangeFrom || !rangeTo || rangeInterval <= 0) return
+    const [fh, fm] = rangeFrom.split(':').map(Number)
+    const [th, tm] = rangeTo.split(':').map(Number)
+    const startMin = fh * 60 + fm
+    const endMin = th * 60 + tm
+    if (endMin < startMin) {
+      setRangeWarning('Giờ "đến" phải sau giờ "từ".')
+      return
+    }
+    const slotCount = Math.floor((endMin - startMin) / rangeInterval) + 1
+    if (slotCount > MAX_RANGE_SLOTS) {
+      setRangeWarning(`Khung này ra ${slotCount} giờ chạy, quá nhiều (tối đa ${MAX_RANGE_SLOTS}) — nới rộng khoảng cách hoặc thu hẹp khung giờ lại.`)
+      return
+    }
+    const generated: string[] = []
+    for (let m = startMin; m <= endMin; m += rangeInterval) {
+      const hh = String(Math.floor(m / 60)).padStart(2, '0')
+      const mm = String(m % 60).padStart(2, '0')
+      generated.push(`${hh}:${mm}`)
+    }
+    setTimes(prev => Array.from(new Set([...prev.filter(t => t.trim()), ...generated])).sort())
   }
 
   function toggleGroup(g: GroupRef) {
@@ -319,6 +357,30 @@ export default function LichGuiTinPage() {
                     <button type="button" onClick={addTime} className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700">
                       <Plus size={13} /> Thêm giờ chạy
                     </button>
+                  )}
+                  {!editingJob && (
+                    <div className="mt-2 p-2.5 bg-gray-50 rounded-xl space-y-1.5">
+                      <p className="text-[11px] font-semibold text-gray-400">Hoặc tạo hàng loạt theo khung giờ</p>
+                      <div className="flex items-center gap-1.5">
+                        <input type="time" value={rangeFrom} onChange={e => setRangeFrom(e.target.value)}
+                          className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-brand-400" />
+                        <span className="text-[11px] text-gray-400 shrink-0">đến</span>
+                        <input type="time" value={rangeTo} onChange={e => setRangeTo(e.target.value)}
+                          className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-brand-400" />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] text-gray-400 shrink-0">Mỗi</span>
+                        <input type="number" min={5} step={5} value={rangeInterval}
+                          onChange={e => setRangeInterval(Number(e.target.value))}
+                          className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-brand-400" />
+                        <span className="text-[11px] text-gray-400 shrink-0">phút</span>
+                        <button type="button" onClick={generateTimesFromRange} disabled={!rangeFrom || !rangeTo}
+                          className="ml-auto text-xs font-semibold text-brand-600 hover:text-brand-700 disabled:opacity-40 disabled:cursor-not-allowed">
+                          Tạo giờ
+                        </button>
+                      </div>
+                      {rangeWarning && <p className="text-[11px] text-red-500">{rangeWarning}</p>}
+                    </div>
                   )}
                 </div>
                 <div>

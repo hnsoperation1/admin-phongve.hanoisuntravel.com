@@ -15,7 +15,7 @@
 //      1 nhân viên đang bấm "Đăng nhập lại Zalo" trên trang RIÊNG của họ
 //   3. checkSyncRequests()  — mỗi dòng sync_requested=true là 1 nhân viên
 //      bấm "Đồng bộ ngay" ở /danh-muc-zalo
-import { Zalo, ThreadType, LoginQRCallbackEventType } from 'zca-js'
+import { Zalo, ThreadType, LoginQRCallbackEventType, ZaloApiError } from 'zca-js'
 import { createClient } from '@supabase/supabase-js'
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 20_000)
@@ -41,6 +41,29 @@ const supabase = createClient(
 // trùng cùng 1 người khi request kéo dài qua nhiều lần poll).
 const sessions = new Map()
 const loginInProgress = new Set()
+
+// Zalo trả lỗi này (nguyên văn tiếng Việt từ server, message kỹ thuật khó
+// hiểu với người dùng cuối) khi phiên đang giữ trong RAM đã bị chính Zalo
+// thu hồi — hay gặp nhất là do tài khoản vừa đăng nhập lại ở nơi khác
+// (điện thoại/trình duyệt khác), Zalo chỉ cho 1 phiên Web sống tại 1 thời
+// điểm. Nhận diện qua nội dung message vì zca-js không có mã lỗi riêng cho
+// trường hợp này (`ZaloApiError.code` là mã lỗi số từ Zalo, không ổn định
+// để dựa vào).
+function isSessionRevokedError(err) {
+  if (!(err instanceof ZaloApiError) && !(err instanceof Error)) return false
+  return /zpw_sek/i.test(err.message)
+}
+
+// Gỡ session chết khỏi RAM (để các lần gửi/đồng bộ sau báo lỗi "chưa đăng
+// nhập" luôn, thay vì lặp lại đúng lỗi này) + cập nhật zalo_session để
+// trang "Đăng nhập lại Zalo" không còn hiện nhầm là đang đăng nhập tốt.
+async function markSessionRevoked(userId) {
+  sessions.delete(userId)
+  await supabase.from('zalo_session').update({
+    status: 'revoked',
+    error_message: 'Tài khoản đã đăng nhập ở nơi khác (điện thoại/trình duyệt khác) nên phiên này bị Zalo ngắt.',
+  }).eq('user_id', userId)
+}
 
 function computeNextRun(runAt, recurrence) {
   const next = new Date(runAt)
@@ -105,10 +128,14 @@ async function processDueJobs() {
       // Lỗi thì đánh dấu 'error' và dừng lặp lại — tránh spam nhóm nếu lỗi
       // dai dẳng (vd session Zalo hết hạn); admin phải vào sửa/reset tay.
       const message = err instanceof Error ? err.message : String(err)
+      const revoked = isSessionRevokedError(err)
       await supabase.from('zalo_scheduled_messages').update({
         status: 'error',
-        last_error: message,
+        last_error: revoked
+          ? 'Tài khoản Zalo đã đăng nhập ở nơi khác, phiên bị ngắt — vào "Đăng nhập lại Zalo" rồi bấm Thử lại.'
+          : message,
       }).eq('id', job.id)
+      if (revoked) await markSessionRevoked(job.created_by)
       console.error(`[worker] Lỗi gửi job ${job.id}:`, message)
     }
   }
@@ -130,6 +157,7 @@ async function syncGroups(userId) {
     const { gridVerMap } = await api.getAllGroups()
     groupIds = Object.keys(gridVerMap)
   } catch (err) {
+    if (isSessionRevokedError(err)) await markSessionRevoked(userId)
     console.error(`[worker] Lỗi getAllGroups() cho user ${userId}:`, err instanceof Error ? err.message : err)
     return
   }
@@ -164,7 +192,14 @@ async function syncContacts(userId) {
   const api = sessions.get(userId)
   if (!api) return
 
-  const friends = await api.getAllFriends()
+  let friends
+  try {
+    friends = await api.getAllFriends()
+  } catch (err) {
+    if (isSessionRevokedError(err)) await markSessionRevoked(userId)
+    console.error(`[worker] Lỗi getAllFriends() cho user ${userId}:`, err instanceof Error ? err.message : err)
+    return
+  }
   if (!friends || friends.length === 0) return
 
   const rows = friends.map(f => ({

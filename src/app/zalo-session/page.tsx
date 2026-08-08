@@ -1,11 +1,11 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { QrCode, Loader2, CheckCircle2, XCircle, RefreshCw } from 'lucide-react'
+import { QrCode, Loader2, XCircle, RefreshCw } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
 
 type SessionState = {
-  status: 'idle' | 'requested' | 'in_progress' | 'qr_ready' | 'scanned' | 'done' | 'expired' | 'declined' | 'error'
+  status: 'idle' | 'requested' | 'in_progress' | 'qr_ready' | 'scanned' | 'done' | 'revoked' | 'expired' | 'declined' | 'error'
   qr_image: string | null
   error_message: string | null
   requested_at: string | null
@@ -16,13 +16,18 @@ type SessionState = {
 // thời; các trạng thái "nghỉ" (idle/done/lỗi) không cần poll dồn dập.
 const ACTIVE_STATUSES = ['requested', 'in_progress', 'qr_ready', 'scanned']
 
+// Cố ý KHÔNG có icon/màu "thành công vĩnh viễn" cho status='done' — trạng
+// thái đó chỉ có nghĩa "lần quét QR gần nhất đã thành công", KHÔNG đảm bảo
+// phiên vẫn còn sống (Zalo có thể ngắt bất cứ lúc nào nếu tài khoản đăng
+// nhập ở nơi khác — lúc đó worker tự chuyển sang 'revoked').
 const STATUS_LABEL: Record<string, string> = {
-  idle: 'Chưa đăng nhập lần nào (hoặc đã lâu không đổi session)',
+  idle: 'Chưa đăng nhập lần nào',
   requested: 'Đang gửi yêu cầu tới worker...',
   in_progress: 'Worker đang khởi tạo mã QR...',
   qr_ready: 'Quét mã QR bên dưới bằng app Zalo trên điện thoại',
   scanned: 'Đã quét — xác nhận đăng nhập trên điện thoại...',
-  done: 'Đăng nhập thành công',
+  done: 'Đã đăng nhập — lần quét QR gần nhất thành công',
+  revoked: 'Tài khoản đã đăng nhập ở nơi khác — phiên này bị ngắt, cần đăng nhập lại',
   expired: 'Mã QR đã hết hạn (~100 giây)',
   declined: 'Đã từ chối đăng nhập trên điện thoại',
   error: 'Có lỗi xảy ra',
@@ -88,9 +93,7 @@ export default function ZaloSessionPage() {
             alt="QR đăng nhập Zalo"
             className="w-56 h-56 rounded-xl border border-gray-100"
           />
-        ) : status === 'done' ? (
-          <CheckCircle2 size={40} className="text-emerald-500" />
-        ) : status === 'error' || status === 'expired' || status === 'declined' ? (
+        ) : status === 'error' || status === 'revoked' || status === 'expired' || status === 'declined' ? (
           <XCircle size={40} className="text-red-400" />
         ) : status === 'requested' || status === 'in_progress' || status === 'scanned' ? (
           <Loader2 size={32} className="animate-spin text-brand-500" />
@@ -100,7 +103,7 @@ export default function ZaloSessionPage() {
 
         <div>
           <p className="text-sm font-medium text-gray-700">{STATUS_LABEL[status] ?? status}</p>
-          {status === 'error' && state?.error_message && (
+          {(status === 'error' || status === 'revoked') && state?.error_message && (
             <p className="text-xs text-red-500 mt-1 break-words">{state.error_message}</p>
           )}
           {state?.updated_at && (
