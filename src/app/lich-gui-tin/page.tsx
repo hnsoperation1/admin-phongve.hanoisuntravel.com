@@ -19,7 +19,18 @@ type ScheduledMessage = {
   last_sent_at: string | null
   created_by: string | null
   creator: { id: string; full_name: string } | null
+  range_from: string | null
+  range_to: string | null
+  range_interval_minutes: number | null
 }
+
+// Mỗi giờ trong "Giờ chạy" biết nó được thêm tay hay sinh ra từ khung giờ
+// (kèm đúng tham số Từ/Đến/Mỗi-bao-nhiêu-phút đã dùng lúc sinh ra nó) — để
+// lúc lưu, mỗi job biết chính xác "nguồn gốc" của giờ đó, hiện lại được ở
+// panel Chi tiết (xem migration_zalo_scheduled_messages_range_meta.sql).
+type TimeEntry =
+  | { value: string; source: 'manual' }
+  | { value: string; source: 'range'; rangeFrom: string; rangeTo: string; rangeInterval: number }
 
 const RECURRENCE_LABELS: Record<string, string> = {
   daily: 'Hàng ngày', weekly: 'Hàng tuần', monthly: 'Hàng tháng', once: 'Chỉ 1 lần',
@@ -70,7 +81,7 @@ export default function LichGuiTinPage() {
   const [title, setTitle] = useState('')
   const [message, setMessage] = useState('')
   const [date, setDate] = useState('')
-  const [times, setTimes] = useState<string[]>([''])
+  const [times, setTimes] = useState<TimeEntry[]>([{ value: '', source: 'manual' }])
   const [rangeFrom, setRangeFrom] = useState('')
   const [rangeTo, setRangeTo] = useState('')
   const [rangeInterval, setRangeInterval] = useState(30)
@@ -126,7 +137,7 @@ export default function LichGuiTinPage() {
     setTitle('')
     setMessage('')
     setDate('')
-    setTimes([''])
+    setTimes([{ value: '', source: 'manual' }])
     setRangeFrom('')
     setRangeTo('')
     setRangeInterval(30)
@@ -139,21 +150,26 @@ export default function LichGuiTinPage() {
   }
 
   function addTime() {
-    setTimes(prev => [...prev, ''])
+    setTimes(prev => [...prev, { value: '', source: 'manual' }])
   }
 
   function removeTime(i: number) {
     setTimes(prev => prev.filter((_, idx) => idx !== i))
   }
 
+  // Sửa tay 1 giờ (kể cả giờ vừa sinh từ khung) → coi là giờ tự do từ đây,
+  // không còn gắn với khung đã sinh ra nó nữa.
   function setTimeAt(i: number, v: string) {
-    setTimes(prev => prev.map((t, idx) => (idx === i ? v : t)))
+    setTimes(prev => prev.map((t, idx) => (idx === i ? { value: v, source: 'manual' } : t)))
   }
 
   // Cách thứ 2 để điền "Giờ chạy" (bên cạnh thêm tay từng giờ): chọn 1
   // khung giờ + tần suất, tự sinh ra các giờ cách đều nhau rồi CỘNG DỒN
   // vào danh sách hiện có (không xoá giờ đã thêm tay trước đó) — mỗi giờ
-  // trong danh sách vẫn fan-out thành 1 job riêng lúc lưu như trước giờ.
+  // trong danh sách vẫn fan-out thành 1 job riêng lúc lưu như trước giờ,
+  // kèm đúng khung giờ/tần suất đã sinh ra NÓ (không phải khung giờ hiện
+  // tại trên form, phòng trường hợp user đổi khung rồi bấm "Tạo giờ" thêm
+  // lần nữa với tham số khác).
   const MAX_RANGE_SLOTS = 60
   function generateTimesFromRange() {
     setRangeWarning('')
@@ -177,7 +193,13 @@ export default function LichGuiTinPage() {
       const mm = String(m % 60).padStart(2, '0')
       generated.push(`${hh}:${mm}`)
     }
-    setTimes(prev => Array.from(new Set([...prev.filter(t => t.trim()), ...generated])).sort())
+    setTimes(prev => {
+      const existingValues = new Set(prev.filter(t => t.value.trim()).map(t => t.value))
+      const additions: TimeEntry[] = generated
+        .filter(v => !existingValues.has(v))
+        .map(v => ({ value: v, source: 'range', rangeFrom, rangeTo, rangeInterval }))
+      return [...prev.filter(t => t.value.trim()), ...additions].sort((a, b) => a.value.localeCompare(b.value))
+    })
   }
 
   function toggleGroup(g: GroupRef) {
@@ -195,13 +217,13 @@ export default function LichGuiTinPage() {
   // fan-out từ nhiều giờ×nhóm không rõ nghĩa (sửa đúng 1 dòng hay cả lô?).
   // Muốn đổi nội dung/giờ/nhóm thì tạo lịch mới, xoá lịch cũ.
   async function save() {
-    const validTimes = times.map(t => t.trim()).filter(Boolean)
+    const validTimes = times.filter(t => t.value.trim())
     if (!title.trim() || !message.trim() || !date || validTimes.length === 0 || selectedGroups.length === 0) return
     setSaving(true)
     try {
       const recurrence_until = recurrence !== 'once' && recurrenceUntil ? recurrenceUntil : null
       for (const t of validTimes) {
-        const iso = dateTimeToIso(date, t)
+        const iso = dateTimeToIso(date, t.value)
         if (!iso) continue
         for (const g of selectedGroups) {
           await fetch('/api/lich-gui-tin', {
@@ -215,6 +237,9 @@ export default function LichGuiTinPage() {
               run_at: iso,
               recurrence,
               recurrence_until,
+              range_from: t.source === 'range' ? t.rangeFrom : null,
+              range_to: t.source === 'range' ? t.rangeTo : null,
+              range_interval_minutes: t.source === 'range' ? t.rangeInterval : null,
             }),
           })
         }
@@ -298,7 +323,10 @@ export default function LichGuiTinPage() {
                   <div className="space-y-2">
                     {times.map((t, i) => (
                       <div key={i} className="flex items-center gap-1.5">
-                        <input type="time" value={t} onChange={e => setTimeAt(i, e.target.value)} className={INPUT} />
+                        <input type="time" value={t.value} onChange={e => setTimeAt(i, e.target.value)} className={INPUT} />
+                        {t.source === 'range' && (
+                          <span className="text-[10px] text-brand-500 shrink-0" title={`Sinh từ khung ${t.rangeFrom}–${t.rangeTo}, mỗi ${t.rangeInterval}p`}>khung</span>
+                        )}
                         {times.length > 1 && (
                           <button type="button" onClick={() => removeTime(i)} className="p-2 text-gray-300 hover:text-red-500 transition-colors">
                             <X size={14} />
@@ -398,7 +426,7 @@ export default function LichGuiTinPage() {
             <div className="flex items-center gap-2 mt-4">
               <button onClick={() => setFormOpen(false)} className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-gray-500 hover:bg-gray-100 transition-colors">Huỷ</button>
               <button onClick={save}
-                disabled={saving || !title.trim() || !message.trim() || !date || times.every(t => !t.trim()) || selectedGroups.length === 0}
+                disabled={saving || !title.trim() || !message.trim() || !date || times.every(t => !t.value.trim()) || selectedGroups.length === 0}
                 className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-sm font-semibold text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-50 transition-colors">
                 {saving && <Loader2 size={14} className="animate-spin" />} Lưu
               </button>
@@ -409,7 +437,7 @@ export default function LichGuiTinPage() {
 
       {viewJob && (
         <div className="fixed inset-y-0 left-52 right-0 z-50 flex justify-end bg-black/30" onClick={() => setViewJob(null)}>
-          <div className="bg-white shadow-xl w-full max-w-md h-full p-5 overflow-y-auto" onClick={e => e.stopPropagation()}>
+          <div className="bg-white shadow-xl w-full max-w-2xl h-full p-5 overflow-y-auto" onClick={e => e.stopPropagation()}>
             <h2 className="font-bold text-gray-900 mb-3">Chi tiết lịch gửi tin</h2>
             <div className="space-y-3">
               <div>
@@ -428,6 +456,14 @@ export default function LichGuiTinPage() {
                 <div className="text-xs font-semibold text-gray-400 mb-1">Chạy lúc</div>
                 <div className="text-sm text-gray-700">{formatDateTime(viewJob.run_at)}</div>
               </div>
+              {viewJob.range_from && viewJob.range_to && (
+                <div>
+                  <div className="text-xs font-semibold text-gray-400 mb-1">Sinh từ khung giờ</div>
+                  <div className="text-sm text-gray-700">
+                    {viewJob.range_from} – {viewJob.range_to}, mỗi {viewJob.range_interval_minutes} phút
+                  </div>
+                </div>
+              )}
               <div>
                 <div className="text-xs font-semibold text-gray-400 mb-1">Lặp lại</div>
                 <div className="text-sm text-gray-700">

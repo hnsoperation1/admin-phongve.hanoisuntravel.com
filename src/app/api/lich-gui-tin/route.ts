@@ -16,13 +16,17 @@ export async function GET() {
   return NextResponse.json({ data: data ?? [] })
 }
 
-// POST — { title, message, zalo_group_id, zalo_group_name?, run_at, recurrence, recurrence_until? }
+// POST — { title, message, zalo_group_id, zalo_group_name?, run_at, recurrence,
+// recurrence_until?, range_from?, range_to?, range_interval_minutes? }
+// 3 trường range_* chỉ để lưu tham khảo "job này sinh ra từ khung giờ nào"
+// (xem migration_zalo_scheduled_messages_range_meta.sql), không ảnh hưởng
+// tới việc gửi tin.
 export async function POST(req: NextRequest) {
   const user = await requirePhongVe()
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const body = await req.json().catch(() => ({}))
-  const { title, message, zalo_group_id, zalo_group_name, run_at, recurrence, recurrence_until } = body
+  const { title, message, zalo_group_id, zalo_group_name, run_at, recurrence, recurrence_until, range_from, range_to, range_interval_minutes } = body
 
   if (!title || !message || !zalo_group_id || !run_at) {
     return NextResponse.json({ error: 'Thiếu trường bắt buộc' }, { status: 400 })
@@ -39,6 +43,9 @@ export async function POST(req: NextRequest) {
       run_at,
       recurrence: recurrence ?? 'once',
       recurrence_until: recurrence_until || null,
+      range_from: range_from || null,
+      range_to: range_to || null,
+      range_interval_minutes: range_interval_minutes || null,
       created_by: user.id,
     })
     .select('*')
